@@ -1,4 +1,6 @@
 node_modules/
 data/
-.env*
+memory/
 *.log
+.DS_Store
+test/.tmp-validate/
