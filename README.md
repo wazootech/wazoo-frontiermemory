@@ -38,10 +38,50 @@ Three phases inside the 6-hour window:
 - [x] Benchmark contract verified from source (`docs/rules.md`, adapter code)
 - [x] Design scoped (2026-10-25)
 - [x] Repository created
-- [ ] Adapter skeleton (Bun project + local pipeline tests)
-- [ ] Smoke-corpus end-to-end run
+- [x] Pipeline skeleton (2026-10-25, `docs/runs/0000-skeleton.md`): ingest → dream → export, tested against the upstream smoke corpus, no network in tests
+- [ ] Extraction + curation quality loop (Phase 2) — needs a rotated DEEPSEEK_API_KEY
+- [ ] Smoke-corpus end-to-end run on Modal/Docker (Phase 3)
 - [ ] Full-corpus screening run + local score
 - [ ] Official submission (3 independent runs, `frontier-memory bundle`, PR to letta-ai)
+
+## Usage
+
+Requires [Bun](https://bun.sh) >= 1.2.
+
+```sh
+bun install
+
+# Deterministic end-to-end smoke run (no network) against the fixture corpus:
+bun run src/index.ts all --corpus test/fixtures/corpus --out /tmp/memory \
+  --state /tmp/state --fallback-only
+
+# Real extraction against a corpus directory (DeepSeek; retries + deterministic
+# fallback per trajectory):
+DEEPSEEK_API_KEY=sk-... bun run src/index.ts all \
+  --corpus /evidence/inputs --out memory --state data/state \
+  --concurrency 8 --model-dir data/models/tfjs-use
+```
+
+Phases can run separately (`ingest`, `dream`, `export`); state is JSON
+(`claims.json`, `dream.json`) plus the embedded SQLite claim graph under
+`--state`. `export` self-validates the memory folder against the benchmark's
+own format rules (ported in `src/validate.ts`, cross-checked against the
+benchmark's Python `check_memory` in the test suite) and fails the run rather
+than writing an invalid memory.
+
+Inside the benchmark sandbox the only network host is the memory model's API
+host (`api.deepseek.com`); TFJS USE weights must be pre-downloaded to
+`--model-dir` during adapter setup (see `adapter/README.md`).
+
+## Layout
+
+- `src/` — the Bun/TypeScript pipeline (ingest → dream → export)
+- `test/` — bun test suite; `test/fixtures/corpus/` is the upstream smoke
+  trajectory pinned by SHA256
+- `adapter/` — DRAFT Harbor adapter (not yet upstreamed)
+- `docs/` — design notes, run records, score reports
+- Runs in the benchmark happen on Modal (or Docker) — never assume this repo's
+  development machine can reach Modal's gRPC control plane.
 
 ## Rules compliance notes
 

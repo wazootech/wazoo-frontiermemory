@@ -1,0 +1,3 @@
+{"type":"user","message":{"role":"user","content":"Remember that our deploy window is 08:00 UTC on Thursdays."}}
+{"type":"assistant","message":{"role":"assistant","content":"Noted the Thursday 08:00 UTC deploy window."}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# Verifier result\n\nPASS"}]}}

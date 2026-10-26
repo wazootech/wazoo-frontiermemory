@@ -1,0 +1,23 @@
+{
+  "name": "wazoo-frontiermemory",
+  "version": "0.1.0",
+  "description": "Wazoo's memory agent for the letta-ai/frontiermemory benchmark",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@wazoo/sparql-engine": "npm:@jsr/wazoo__sparql-engine@^0.4.2",
+    "@worlds/sdk": "npm:@jsr/worlds__sdk@^0.9.0",
+    "@worlds/sqlite": "npm:@jsr/worlds__sqlite@^0.7.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.14",
+    "prettier": "^3.7.4",
+    "typescript": "^5.9.3"
+  }
+}
