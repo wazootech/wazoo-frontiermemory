@@ -56,20 +56,66 @@ export interface ExtractOptions {
   fallbackOnly?: boolean
   /** Cap on user+assistant turns sent to the model per trajectory. */
   maxPromptEvents?: number
+  /**
+   * Per-trajectory run telemetry (attempts, retries, token usage). Called
+   * exactly once per trajectory, right before its claims are returned.
+   */
+  onRun?: (info: ExtractionRunInfo) => void
+}
+
+/** Telemetry for one trajectory's extraction, however it ended. */
+export interface ExtractionRunInfo {
+  trajId: string
+  /** LLM API calls made (main call + any JSON-repair reprompt). */
+  attempts: number
+  /** Transport retries inside `withRetries` (attempts - successful calls). */
+  retries: number
+  /** True when the deterministic fallback produced the claims. */
+  fallback: boolean
+  /** Token usage reported by the API, when available. */
+  promptTokens?: number
+  completionTokens?: number
+  /** Prompt size in characters, for estimation when usage is missing. */
+  charsIn: number
 }
 
 export async function extractClaimsForTrajectory(
   traj: Trajectory,
   options: ExtractOptions = {}
 ): Promise<Claim[]> {
-  if (options.fallbackOnly) return extractClaimsFallback(traj)
+  if (options.fallbackOnly) {
+    options.onRun?.({ trajId: traj.trajId, attempts: 0, retries: 0, fallback: true, charsIn: 0 })
+    return extractClaimsFallback(traj)
+  }
+  const stats = { attempts: 0, retries: 0, promptTokens: 0, completionTokens: 0, charsIn: 0 }
   try {
-    const claims = await extractClaimsLlm(traj, options)
-    if (claims.length > 0) return claims
+    const claims = await extractClaimsLlm(traj, options, stats)
+    if (claims.length > 0) {
+      options.onRun?.({
+        trajId: traj.trajId,
+        attempts: stats.attempts,
+        retries: stats.retries,
+        fallback: false,
+        promptTokens: stats.promptTokens || undefined,
+        completionTokens: stats.completionTokens || undefined,
+        charsIn: stats.charsIn,
+      })
+      return claims
+    }
   } catch {
     // Bounded retries exhausted — fall through to the deterministic extractor.
   }
-  return extractClaimsFallback(traj)
+  const claims = extractClaimsFallback(traj)
+  options.onRun?.({
+    trajId: traj.trajId,
+    attempts: stats.attempts,
+    retries: stats.retries,
+    fallback: true,
+    promptTokens: stats.promptTokens || undefined,
+    completionTokens: stats.completionTokens || undefined,
+    charsIn: stats.charsIn,
+  })
+  return claims
 }
 
 function conversationText(traj: Trajectory, maxEvents?: number): string {
@@ -160,36 +206,55 @@ function normalizeType(value: unknown): ClaimType {
   return "fact"
 }
 
-async function extractClaimsLlm(traj: Trajectory, options: ExtractOptions): Promise<Claim[]> {
+interface LlmStats {
+  attempts: number
+  retries: number
+  promptTokens: number
+  completionTokens: number
+  charsIn: number
+}
+
+async function extractClaimsLlm(
+  traj: Trajectory,
+  options: ExtractOptions,
+  stats: LlmStats
+): Promise<Claim[]> {
   const client = new DeepSeekClient({ apiKey: options.apiKey, baseUrl: options.baseUrl })
-  const raw = await withRetries(
-    () =>
-      client.chatCompletion({
-        model: options.model ?? process.env.EXTRACTION_MODEL ?? EXTRACTION_MODEL_DEFAULT,
-        prompt: buildExtractionPrompt(traj, options.maxPromptEvents),
-        maxTokens: EXTRACTION_MAX_TOKENS,
-        temperature: 0,
-        responseFormat: "json_object" as const,
-        thinking: "disabled",
-      }),
+  const callOpts = {
+    model: options.model ?? process.env.EXTRACTION_MODEL ?? EXTRACTION_MODEL_DEFAULT,
+    maxTokens: EXTRACTION_MAX_TOKENS,
+    temperature: 0,
+    responseFormat: "json_object" as const,
+    thinking: "disabled" as const,
+  }
+  const prompt = buildExtractionPrompt(traj, options.maxPromptEvents)
+  stats.charsIn = prompt.length
+
+  const main = await withRetries(
+    () => {
+      stats.attempts++
+      return client.chatCompletion({ ...callOpts, prompt })
+    },
     { maxRetries: EXTRACTION_MAX_RETRIES, baseDelayMs: EXTRACTION_BASE_DELAY_MS }
-  ).then((r) => r.text)
+  )
+  stats.retries = Math.max(0, stats.attempts - 1)
+  stats.promptTokens += main.usage?.promptTokens ?? 0
+  stats.completionTokens += main.usage?.completionTokens ?? 0
 
   let claims: Claim[]
   try {
-    claims = parseLlmClaims(raw, traj)
+    claims = parseLlmClaims(main.text, traj)
   } catch {
     // json_object mode should keep this rare; one reprompt round before fallback.
     const retry = await client.chatCompletion({
-      model: options.model ?? process.env.EXTRACTION_MODEL ?? EXTRACTION_MODEL_DEFAULT,
+      ...callOpts,
       prompt:
-        buildExtractionPrompt(traj, options.maxPromptEvents) +
+        prompt +
         "\n\nYour previous response was not a valid JSON array. Respond with ONLY the JSON array.",
-      maxTokens: EXTRACTION_MAX_TOKENS,
-      temperature: 0,
-      responseFormat: "json_object" as const,
-      thinking: "disabled",
     })
+    stats.attempts++
+    stats.promptTokens += retry.usage?.promptTokens ?? 0
+    stats.completionTokens += retry.usage?.completionTokens ?? 0
     claims = parseLlmClaims(retry.text, traj)
   }
   return claims

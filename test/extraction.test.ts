@@ -108,6 +108,18 @@ describe("LLM extraction plumbing (no network)", () => {
     expect(claims.length).toBeGreaterThan(0)
     expect(claims.every((c) => c.extractor === "fallback")).toBeTrue()
   })
+
+  test("onRun telemetry fires once per trajectory", async () => {
+    const seen: Array<{ trajId: string; fallback: boolean; attempts: number }> = []
+    await extractClaimsForTrajectory(traj, {
+      fallbackOnly: true,
+      onRun: (info) =>
+        seen.push({ trajId: info.trajId, fallback: info.fallback, attempts: info.attempts }),
+    })
+    expect(seen).toHaveLength(1)
+    expect(seen[0].trajId).toBe(traj.trajId)
+    expect(seen[0].fallback).toBeTrue()
+  })
 })
 
 describe("retry policy", () => {
