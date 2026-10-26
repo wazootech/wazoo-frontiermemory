@@ -27,6 +27,7 @@
 
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
+import { parseArgs as utilParseArgs } from "node:util"
 import { loadCorpus } from "./corpus"
 import { extractClaimsForTrajectory } from "./extraction"
 import { importGraph } from "./graph"
@@ -53,38 +54,53 @@ export interface CliArgs {
   modelDir?: string
 }
 
+const USAGE = `usage: bun run src/index.ts <ingest|dream|export|all> --corpus <dir> --out <dir>`
+
 export function parseArgs(argv: string[]): CliArgs {
-  const [phase, ...rest] = argv
+  // Bun's node:util shim (and its types) only implements the config-only form
+  // of util.parseArgs, which reads process.argv.slice(2) and ignores the
+  // optional argv parameter that stock Node accepts. Route the caller's argv
+  // through process.argv for the duration of the call so both runtimes behave.
+  const saved = process.argv
+  process.argv = [saved[0] ?? "bun", saved[1] ?? "src/index.ts", ...argv]
+  let parsed
+  try {
+    parsed = utilParseArgs({
+      allowPositionals: true,
+      strict: true,
+      options: {
+        corpus: { type: "string", default: "smoke/corpus" },
+        out: { type: "string", default: "memory" },
+        state: { type: "string", default: "data/state" },
+        limit: { type: "string" },
+        concurrency: { type: "string", default: "1" },
+        "fallback-only": { type: "boolean", default: false },
+        "model-dir": { type: "string" },
+      },
+    })
+  } catch (error) {
+    throw new Error(`${(error as Error).message}\n${USAGE}`)
+  } finally {
+    process.argv = saved
+  }
+  const values = parsed.values as Record<
+    "corpus" | "out" | "state" | "limit" | "concurrency" | "model-dir" | "fallback-only",
+    string | boolean | undefined
+  >
+  const [phase] = parsed.positionals
   if (phase !== "ingest" && phase !== "dream" && phase !== "export" && phase !== "all") {
-    throw new Error(
-      `usage: bun run src/index.ts <ingest|dream|export|all> --corpus <dir> --out <dir>`
-    )
+    throw new Error(USAGE)
   }
-  const args: CliArgs = {
+  return {
     phase,
-    corpus: "smoke/corpus",
-    out: "memory",
-    state: "data/state",
-    concurrency: 1,
-    fallbackOnly: false,
+    corpus: String(values.corpus),
+    out: String(values.out),
+    state: String(values.state),
+    limit: values.limit === undefined ? undefined : Number(values.limit),
+    concurrency: Number(values.concurrency),
+    fallbackOnly: Boolean(values["fallback-only"]),
+    modelDir: values["model-dir"] === undefined ? undefined : String(values["model-dir"]),
   }
-  for (let i = 0; i < rest.length; i++) {
-    const flag = rest[i]
-    const next = (): string => {
-      const value = rest[++i]
-      if (value === undefined) throw new Error(`${flag} requires a value`)
-      return value
-    }
-    if (flag === "--corpus") args.corpus = next()
-    else if (flag === "--out") args.out = next()
-    else if (flag === "--state") args.state = next()
-    else if (flag === "--limit") args.limit = Number(next())
-    else if (flag === "--concurrency") args.concurrency = Number(next())
-    else if (flag === "--fallback-only") args.fallbackOnly = true
-    else if (flag === "--model-dir") args.modelDir = next()
-    else throw new Error(`unknown flag: ${flag}`)
-  }
-  return args
 }
 
 async function runIngest(args: CliArgs): Promise<IngestState> {
