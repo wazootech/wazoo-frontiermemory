@@ -68,7 +68,7 @@ function useWhen(item: DreamItem): string {
 
 function renderSkill(item: DreamItem, file: string): string {
   const lines: string[] = []
-  lines.push(`# ${item.instruction.replace(/^(Follow|Respect|Environment fact): /, "")}`, "")
+  lines.push(`# ${item.instruction}`, "")
   lines.push(`**Use when:** ${useWhen(item)}`, "")
   lines.push(item.text, "")
   lines.push(`Pattern key: \`${item.key}\`  ·  Supporting trajectories: ${item.support}`)
@@ -113,6 +113,7 @@ function renderMemoryIndex(
     "## How this memory was built",
     "",
     `- ${report.stats.claims} claims extracted from the trajectory corpus into a provenance-carrying claim graph.`,
+    `- Near-duplicate phrasings were consolidated; each unique rule appears once.`,
     `- Patterns recurring across trajectories were promoted here; singletons stayed in the graph.`,
     `- Provenance per claim: trajectory id, turn, and the trajectory's verifier result (PASS/FAIL).`,
     ""
