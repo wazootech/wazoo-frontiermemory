@@ -14,7 +14,11 @@
  * - taskRules: correction/avoidance claims, weighted toward FAIL trajectories
  *   (what went wrong and how the user redirected it),
  * - userPreferences: preference claims and how they sequence within a trajectory,
- * - environmentFacts: paths, config files, and command patterns that recur.
+ * - environmentFacts: short environment-state claims (paths, tool availability,
+ *   configs) — never tool-call dumps or task briefs.
+ *
+ * Every list then runs through near-duplicate consolidation so the same rule
+ * phrased three slightly different ways surfaces once.
  */
 
 import type { SearchRequest, SearchResponse, SparqlRequest, SparqlResponse } from "@worlds/sdk"
@@ -31,7 +35,7 @@ export interface DreamItem {
   /** Normalized pattern key the cluster formed around. */
   key: string
   kind: "task-rule" | "user-preference" | "environment-fact"
-  /** The imperative memory line as it will appear in the memory folder. */
+  /** The bare memory line as it will appear in MEMORY.md — no boilerplate prefix. */
   instruction: string
   /** The representative claim text backing the instruction. */
   text: string
@@ -105,13 +109,168 @@ export function normalizePatternKey(text: string, maxTokens = 5): string {
   return tokens.slice(0, maxTokens).join(" ") || text.toLowerCase().slice(0, 60)
 }
 
+/** Content-word tokenization for similarity: lowercase, stopword-free, edge punctuation stripped ("main." matches "main"). */
+export function contentTokens(text: string): string[] {
+  return (
+    text
+      .toLowerCase()
+      .match(/[a-z0-9][a-z0-9'/.-]*/g)
+      ?.map((t) => t.replace(/^[.'/-]+|[.'/-]+$/g, ""))
+      .filter((t) => t.length > 2 && !STOPWORDS.has(t)) ?? []
+  )
+}
+
+/**
+ * Light suffix stem so "requires"/"required", "cheating"/"cheat" match —
+ * paraphrases of one rule conjugate freely. Deliberately shallow; this is a
+ * dedup heuristic, not a linguistics project.
+ */
+function stem(token: string): string {
+  if (token.length >= 5 && token.endsWith("ies")) return `${token.slice(0, -3)}y`
+  if (token.length >= 5 && token.endsWith("ing")) return token.slice(0, -3)
+  if (token.length >= 5 && token.endsWith("ed")) return token.slice(0, -2)
+  if (token.length >= 4 && token.endsWith("es")) return token.slice(0, -2)
+  if (token.length >= 4 && token.endsWith("s")) return token.slice(0, -1)
+  return token
+}
+
+function stemmedTokens(text: string): Set<string> {
+  return new Set(contentTokens(text).map(stem))
+}
+
+/**
+ * Token-overlap similarity between two token sets. Jaccard alone punishes
+ * paraphrases where one phrasing simply says more ("count each pair once"
+ * vs "count each pair once rather than per direction"), so containment
+ * overlap (shared / smaller set) rescues those once both texts carry enough
+ * content words for containment to mean something.
+ */
+function setSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1
+  if (a.size === 0 || b.size === 0) return 0
+  let shared = 0
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a]
+  for (const token of small) if (large.has(token)) shared += 1
+  const jaccard = shared / (a.size + b.size - shared)
+  if (small.size < 4) return jaccard
+  const containment = shared / small.size
+  return Math.max(jaccard, containment)
+}
+
+/** Similarity on content words: 1 = identical, 0 = disjoint. */
+export function jaccardSimilarity(a: string, b: string): number {
+  return setSimilarity(stemmedTokens(a), stemmedTokens(b))
+}
+
+interface Consolidatable {
+  key: string
+  text: string
+  evidence: Evidence[]
+  support: number
+  claimTypes: ClaimType[]
+}
+
+/** Union two items' provenance, deduplicated per (trajectory, turn). */
+function mergeEvidence(a: Evidence[], b: Evidence[]): Evidence[] {
+  const seen = new Set<string>()
+  const merged: Evidence[] = []
+  for (const e of [...a, ...b].sort(
+    (x, y) => x.trajId.localeCompare(y.trajId) || x.turn - y.turn
+  )) {
+    const id = `${e.trajId}/${e.turn}`
+    if (seen.has(id)) continue
+    seen.add(id)
+    merged.push(e)
+  }
+  return merged
+}
+
+/**
+ * Near-duplicate consolidation: the same rule keeps resurfacing in slightly
+ * different words ("count each pair once" vs "count each pair once rather
+ * than per direction"), and exact-match clustering alone leaves them as
+ * separate entries. Greedily merge items whose representative texts share >=
+ * `threshold` content-word overlap (see {@link jaccardSimilarity}). The
+ * shortest phrasing wins (it tends to be the most general); the merged item
+ * carries the union of all members' provenance.
+ */
+export function consolidateSimilar<T extends Consolidatable>(items: T[], threshold = 0.75): T[] {
+  const kept: T[] = []
+  const keptTokens: Set<string>[] = []
+  for (const item of items) {
+    const tokens = stemmedTokens(item.text)
+    let twinIndex = -1
+    for (let i = 0; i < kept.length; i++) {
+      if (setSimilarity(keptTokens[i], tokens) >= threshold) {
+        twinIndex = i
+        break
+      }
+    }
+    if (twinIndex < 0) {
+      kept.push(item)
+      keptTokens.push(tokens)
+      continue
+    }
+    const twin = kept[twinIndex]
+    const shorter = item.text.length < twin.text.length ? item : twin
+    twin.key = shorter.key
+    twin.text = shorter.text
+    keptTokens[twinIndex] = stemmedTokens(twin.text)
+    twin.evidence = mergeEvidence(twin.evidence, item.evidence)
+    twin.support = new Set(twin.evidence.map((e) => e.trajId)).size
+    twin.claimTypes = [...new Set([...twin.claimTypes, ...item.claimTypes])]
+  }
+  return kept
+}
+
 const CORRECTION_RE =
   /\b(?:don'?t|do not|never|always|stop|instead|rather|wrong|nope|actually|keep it|make it|no longer|from now on)\b/i
 const PATH_RE = /(?:^|[\s`"'])(\/[\w./@+-]{2,}|\.{0,2}\/[\w./@+-]+|~\/[\w./@+-]+)/
 const CONFIG_RE = /\b(?:config\/[\w./-]+|\.env(?:\.\w+)?|Makefile|package\.json|tsconfig\.json)\b/
 const COMMAND_RE = /\b(?:npm|bun|pnpm|yarn|cargo|go|docker|kubectl|git)\s+\w[\w-]*/
+const FILE_NAME_RE =
+  /\b[\w@-]+[\w@.-]*\.(?:py|json|toml|ya?ml|md|txt|csv|ts|tsx|js|mjs|sh|pcap|env|cfg|ini|lock|log)\b/
+const TOOL_NAME_RE =
+  /\b(?:ripgrep|rg|grep|find|git|python3?|pip3?|node|bun|npm|pnpm|yarn|cargo|docker|kubectl|make|cmake|pytest|uv)\b/
 
-interface ClaimBinding {
+/** Verbatim tool-call payloads: execution traces, not environment state. */
+const TOOL_DUMP_RE = /\bTool exec:|exec_command|await tools\.|"cmd":|workdir":/
+
+/** Task-problem statements: someone asking for work, not how the box is set up. */
+const TASK_REQUEST_RE =
+  /^(?:the )?user (?:tasked|asked|instructed|requested|wanted|requires|required)\b/i
+
+/** Per-task deliverable requirements: what the task demands, not what exists. */
+const TASK_REQUIREMENT_RE =
+  /^(?:the )?(?:task|solution|final answer|submission)\b.{0,80}\b(?:must|requires|required|should)\b/i
+
+/** Generic assistant narration: what the agent did, not what the box has. */
+const ASSISTANT_NARRATION_RE =
+  /^(?:the )?(?:assistant|agent) (?:wrote|created|ran|executed|used|added|modified|changed|generated|implemented|installed|computed|reported|then)\b|^saved\b/i
+
+/** Longest claim an environment fact may run before it is a payload, not a claim. */
+export const ENV_FACT_MAX_CHARS = 200
+
+/**
+ * Environment facts are short environment-state claims: paths, config
+ * locations, tool availability, directory contents, service conventions.
+ * Explicitly not: tool-call dumps, task-problem statements, or narration of
+ * what the assistant happened to do.
+ */
+export function isEnvironmentFactClaim(b: ClaimBinding): boolean {
+  const text = b.claimText.replace(/\s+/g, " ").trim()
+  if (text.length === 0 || text.length > ENV_FACT_MAX_CHARS) return false
+  if (/\n/.test(b.claimText)) return false
+  if (TOOL_DUMP_RE.test(b.claimText)) return false
+  if (TASK_REQUEST_RE.test(text)) return false
+  if (TASK_REQUIREMENT_RE.test(text)) return false
+  if (ASSISTANT_NARRATION_RE.test(text)) return false
+  return (
+    PATH_RE.test(text) || CONFIG_RE.test(text) || FILE_NAME_RE.test(text) || TOOL_NAME_RE.test(text)
+  )
+}
+
+export interface ClaimBinding {
   claimText: string
   type: ClaimType
   subject?: string
@@ -217,10 +376,13 @@ function cluster(
   return clusters
 }
 
-/** Longest claimText wins as representative; deterministic tie-break. */
+/**
+ * Representative claim for a cluster: the shortest phrasing wins (the most
+ * general formulation of the rule), deterministic tie-break.
+ */
 function representative(bindings: ClaimBinding[]): ClaimBinding {
   return [...bindings].sort(
-    (a, b) => b.claimText.length - a.claimText.length || (a.claimText < b.claimText ? -1 : 1)
+    (a, b) => a.claimText.length - b.claimText.length || (a.claimText < b.claimText ? -1 : 1)
   )[0]
 }
 
@@ -231,13 +393,57 @@ function outcomeWeight(evidence: Evidence[]): number {
   return fail * 2 + pass
 }
 
+/**
+ * Environment facts are ranked by how instructive they are: FAIL-provenance
+ * weighs double (environment surprises correlate with failures), and a fact
+ * that recurs across >= 2 trajectories gets a boost over singletons.
+ */
+function environmentScore(item: DreamItem): number {
+  const fail = item.evidence.filter((e) => e.outcome === "FAIL").length
+  const pass = item.evidence.filter((e) => e.outcome === "PASS").length
+  return fail * 2 + pass + (item.support >= 2 ? 3 : 0)
+}
+
+/**
+ * Per-trajectory outcome: every claim inherits its trajectory's outcome, so
+ * tally per trajId and take the majority (defensive against mixed labels).
+ * These are trajectory counts, not claim counts — the MEMORY.md header must
+ * not report 10k claims as "10k trajectories".
+ */
+function trajectoryOutcomes(bindings: ClaimBinding[]): Map<string, Outcome> {
+  const tally = new Map<string, Map<Outcome, number>>()
+  for (const b of bindings) {
+    let byOutcome = tally.get(b.trajId)
+    if (!byOutcome) {
+      byOutcome = new Map()
+      tally.set(b.trajId, byOutcome)
+    }
+    byOutcome.set(b.outcome, (byOutcome.get(b.outcome) ?? 0) + 1)
+  }
+  const result = new Map<string, Outcome>()
+  for (const [trajId, byOutcome] of tally) {
+    let best: Outcome = "unknown"
+    let bestCount = -1
+    for (const outcome of ["PASS", "FAIL", "unknown"] as const) {
+      const count = byOutcome.get(outcome) ?? 0
+      if (count > bestCount) {
+        best = outcome
+        bestCount = count
+      }
+    }
+    result.set(trajId, best)
+  }
+  return result
+}
+
 export function buildDreamReport(bindings: ClaimBinding[]): DreamReport {
+  const perTrajectory = trajectoryOutcomes(bindings)
   const stats = {
     claims: bindings.length,
-    trajectories: new Set(bindings.map((b) => b.trajId)).size,
-    pass: bindings.filter((b) => b.outcome === "PASS").length,
-    fail: bindings.filter((b) => b.outcome === "FAIL").length,
-    unknown: bindings.filter((b) => b.outcome === "unknown").length,
+    trajectories: perTrajectory.size,
+    pass: [...perTrajectory.values()].filter((o) => o === "PASS").length,
+    fail: [...perTrajectory.values()].filter((o) => o === "FAIL").length,
+    unknown: [...perTrajectory.values()].filter((o) => o === "unknown").length,
   }
 
   // --- task rules: corrections and avoidance rules, FAIL-weighted -----------
@@ -254,10 +460,10 @@ export function buildDreamReport(bindings: ClaimBinding[]): DreamReport {
       return {
         key,
         kind: "task-rule" as const,
-        instruction: `Follow the user's stated working rule: ${rep.claimText.replace(/\s+/g, " ")}`,
+        instruction: rep.claimText.replace(/\s+/g, " ").trim(),
         text: rep.claimText,
         support: new Set(evidence.map((e) => e.trajId)).size,
-        evidence: evidence.slice(0, 8),
+        evidence,
         claimTypes: [...new Set(group.map((g) => g.type))],
       }
     })
@@ -273,30 +479,23 @@ export function buildDreamReport(bindings: ClaimBinding[]): DreamReport {
     .map(([key, group]) => {
       const rep = representative(group)
       const evidence = toEvidence(group)
-      const sequence = group
-        .slice()
-        .sort((a, b) => a.trajId.localeCompare(b.trajId) || a.turn - b.turn)
-        .map((g) => `${g.trajId}#${g.turn}`)
-        .slice(0, 8)
-        .join(", ")
       return {
         key,
         kind: "user-preference" as const,
-        instruction: `Respect the user's preference: ${rep.claimText.replace(/\s+/g, " ")} (first stated at ${sequence.split(", ")[0]})`,
+        instruction: rep.claimText.replace(/\s+/g, " ").trim(),
         text: rep.claimText,
         support: new Set(evidence.map((e) => e.trajId)).size,
-        evidence: evidence.slice(0, 8),
+        evidence,
         claimTypes: [...new Set(group.map((g) => g.type))],
       }
     })
     .sort((a, b) => b.support - a.support || outcomeWeight(b.evidence) - outcomeWeight(a.evidence))
 
-  // --- environment facts: recurring paths, configs, commands ----------------
-  const envBindings = bindings.filter(
-    (b) =>
-      b.type === "fact" &&
-      (PATH_RE.test(b.claimText) || CONFIG_RE.test(b.claimText) || COMMAND_RE.test(b.claimText))
-  )
+  // --- environment facts: short environment-state claims ---------------------
+  // Tool availability, paths, configs, directory contents, conventions.
+  // Task agents have finite attention; a fact that is really a 2KB tool-call
+  // dump or a restatement of the task brief costs more to read than it pays.
+  const envBindings = bindings.filter((b) => b.type === "fact" && isEnvironmentFactClaim(b))
   const environmentFacts = [
     ...cluster(envBindings, (b) =>
       normalizePatternKey(b.where ?? b.object ?? b.claimText, 3)
@@ -308,16 +507,21 @@ export function buildDreamReport(bindings: ClaimBinding[]): DreamReport {
       return {
         key,
         kind: "environment-fact" as const,
-        instruction: `Environment fact: ${rep.claimText.replace(/\s+/g, " ")}`,
+        instruction: rep.claimText.replace(/\s+/g, " ").trim(),
         text: rep.claimText,
         support: new Set(evidence.map((e) => e.trajId)).size,
-        evidence: evidence.slice(0, 8),
+        evidence,
         claimTypes: [...new Set(group.map((g) => g.type))],
       }
     })
-    .sort((a, b) => b.support - a.support)
+    .sort((a, b) => environmentScore(b) - environmentScore(a) || b.support - a.support)
 
-  return { taskRules, userPreferences, environmentFacts, stats }
+  return {
+    taskRules: consolidateSimilar(taskRules),
+    userPreferences: consolidateSimilar(userPreferences),
+    environmentFacts: consolidateSimilar(environmentFacts),
+    stats,
+  }
 }
 
 /**
