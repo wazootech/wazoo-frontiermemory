@@ -1,13 +1,22 @@
 # adapter/ — DRAFT Harbor adapter
 
-`wazoo_memory.py` is a draft Harbor `BaseInstalledAgent` following the same
-shape as `letta-ai/frontiermemory`'s `agents/openai_sdk.py` (`install()` runs
-with internet to stage Bun + the TFJS USE weights; `run()` is the 6-hour
-generation window where only `api.deepseek.com` is reachable).
+Two DRAFT Harbor `BaseInstalledAgent` adapters following the same shape as
+`letta-ai/frontiermemory`'s `agents/openai_sdk.py`:
 
-**This is not pushed to letta-ai.** When it is wired and tested against the
-smoke task, it moves into that repo under
-`src/frontier_memory/agents/wazoo/` via the harness-submission PR template.
+- `wazoo_memory.py`: memory generation (`install()` runs with internet to
+  stage Bun + the TFJS USE weights; `run()` is the 6-hour generation window
+  where only `api.deepseek.com` is reachable).
+- `deepseek_task.py` + `deepseek_driver.py`: a DeepSeek **task** agent for
+  local A/B runs (memory seeded like `MemoryCodex`, stdlib driver loop, bash
+  tool, token metering). Not leaderboard-eligible; see `docs/screening.md`.
+  Tests: `python3 -m unittest adapter.test_deepseek_task` (mock HTTP server,
+  no Docker/Modal needed).
+
+**Neither is pushed to letta-ai.** When wired and tested against the smoke
+task, they move into that repo under `src/frontier_memory/agents/` via the
+harness-submission PR template. To use the DeepSeek task agent locally, copy
+both files to that path and pass
+`--harness frontier_memory.agents.deepseek_task:DeepseekTaskAgent`.
 
 Known gaps before upstreaming:
 

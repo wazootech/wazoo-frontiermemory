@@ -73,6 +73,29 @@ Inside the benchmark sandbox the only network host is the memory model's API
 host (`api.deepseek.com`); TFJS USE weights must be pre-downloaded to
 `--model-dir` during adapter setup (see `adapter/README.md`).
 
+## DeepSeek task agent (local A/B only)
+
+`adapter/deepseek_task.py` is a Harbor task agent that runs DeepSeek as the
+**task** model, so we can measure whether the memory helps **before spending
+task-model money** on GPT-6 Sol or Opus 5.5 runs. It seeds the dream's memory
+the same way the benchmark's own `MemoryCodex` does, then drives a
+standard-library-only loop (`adapter/deepseek_driver.py`, `urllib` to
+`api.deepseek.com`, no `openai` SDK) whose only tool is a bash shell.
+
+> **Not leaderboard-eligible.** Benchmark rules require the task model to be
+> GPT-6 Sol or Opus 5.5 for official runs. Scores from this harness are local
+> A/B evidence only. Web search is not a tool in this driver (there is
+> nothing to disable), and the only host contacted is `api.deepseek.com`.
+
+Local smoke tests (no Docker/Modal needed):
+
+```sh
+python3 -m unittest adapter/test_deepseek_task
+```
+
+The Harbor wiring itself needs Docker/Modal; see `docs/screening.md` for the
+exact commands to run from Ethan's machine.
+
 ## Layout
 
 - `src/` — the Bun/TypeScript pipeline (ingest → dream → export)
