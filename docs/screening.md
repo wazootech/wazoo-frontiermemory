@@ -68,3 +68,71 @@ Notes:
   attempts × 2 (memory + control).
 - Official submission later: 3 independent runs of all of the above, each with
   fresh memory generation, plus `frontier-memory bundle` per run.
+
+## DeepSeek end-to-end (local A/B, not leaderboard-eligible)
+
+Before spending task-model money on GPT-6 Sol runs, run the whole pipeline
+with DeepSeek as the task model too. The question this answers: does the
+memory help? The question it does NOT answer: the official score.
+
+> **WARNING: NOT LEADERBOARD-ELIGIBLE.** Benchmark rules require the task
+> model to be GPT-6 Sol or Opus 5.5 for official runs. DeepSeek as task model
+> produces local A/B evidence only. Web search is not a tool in this driver
+> (nothing to disable); the only host contacted is `api.deepseek.com`.
+
+Setup (same machine, same venv as above, plus the new agent):
+
+```bash
+cp wazoo-frontiermemory/adapter/deepseek_task.py  src/frontier_memory/agents/deepseek_task.py
+cp wazoo-frontiermemory/adapter/deepseek_driver.py src/frontier_memory/agents/deepseek_driver.py
+```
+
+Validate the harness wiring on the smoke task first (1 attempt, ~5 min):
+
+```bash
+frontier-memory run-tasks --tasks smoke/task \
+  --harness frontier_memory.agents.deepseek_task:DeepseekTaskAgent \
+  -m deepseek/deepseek-v4-flash -e modal -k 1 \
+  --memory jobs/wazoo-screen-memory-1 --allow-host api.deepseek.com
+```
+
+If that passes, the full local A/B is the same three commands as above with
+the DeepSeek task agent and `-m deepseek/deepseek-v4-flash` for BOTH stages:
+
+```bash
+# 1) Memory generation (unchanged): our pipeline, DeepSeek as memory model.
+frontier-memory generate-memory --corpus data/corpus/joint-674 \
+  --harness frontier_memory.agents.wazoo_memory:WazooMemoryAgent \
+  -m deepseek/deepseek-v4-flash \
+  --allow-host api.deepseek.com \
+  -e modal --job-name wazoo-ab-memory-1
+
+# 2) Task stage with that memory: DeepSeek task agent.
+frontier-memory run-tasks \
+  --harness frontier_memory.agents.deepseek_task:DeepseekTaskAgent \
+  -m deepseek/deepseek-v4-flash \
+  --memory jobs/wazoo-ab-memory-1 \
+  --allow-host api.deepseek.com \
+  -e modal -k 3 --job-name wazoo-ab-tasks-1
+
+# 3) No-memory control, same DeepSeek task agent.
+frontier-memory run-tasks \
+  --harness frontier_memory.agents.deepseek_task:DeepseekTaskAgent \
+  -m deepseek/deepseek-v4-flash \
+  --allow-host api.deepseek.com \
+  -e modal -k 3 --job-name wazoo-ab-control-1
+
+# Then, locally:
+frontier-memory check-memory jobs/wazoo-ab-memory-1
+frontier-memory score jobs/wazoo-ab-tasks-1
+frontier-memory score jobs/wazoo-ab-control-1
+```
+
+Caveats:
+- The delta measured here is with a weaker task model: a memory that helps a
+  DeepSeek agent may not transfer to GPT-6 Sol (and vice versa). Read it as a
+  go/no-go signal, not a score prediction.
+- Token usage per trial is recorded in `deepseek-task-result.json` and rolled
+  into the Harbor trial context, so the A/B also prices itself.
+- DeepSeek the task agent still burns DeepSeek API spend across 15 tasks × 3
+  attempts × 2 arms; smoke/task first keeps that cheap.
