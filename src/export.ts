@@ -17,6 +17,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { checkMemory, ENTRY_FILE, SUMMARY_FILE, type ValidationReport } from "./validate"
 import type { DreamItem, DreamReport } from "./dream"
+import { isAnswerArtifact } from "./dream"
 
 export interface ExportOptions {
   /** Include per-claim provenance lines in skill files (default true). */
@@ -135,6 +136,11 @@ export async function exportMemory(
   for (const item of [...report.taskRules, ...report.userPreferences, ...report.environmentFacts]) {
     if (seen.has(item.key)) continue
     seen.add(item.key)
+    // The dream instruction forbids memory carrying verbatim answers,
+    // patches, diff hunks, or answer strings, in any kind. Screen at the
+    // export boundary so the rule holds regardless of how a pattern was
+    // curated upstream.
+    if (isAnswerArtifact(item.instruction) || isAnswerArtifact(item.text)) continue
     allItems.push(item)
   }
 

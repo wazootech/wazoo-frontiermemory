@@ -236,6 +236,32 @@ const TOOL_NAME_RE =
 /** Verbatim tool-call payloads: execution traces, not environment state. */
 const TOOL_DUMP_RE = /\bTool exec:|exec_command|await tools\.|"cmd":|workdir":/
 
+/**
+ * Answer artifacts, per the FrontierMemory dream instruction: memory must
+ * generalize methods and "must not copy final answers, patches, diff hunks,
+ * answer strings". Task trials that look like they got an answer from
+ * outside the memory fail trace review (docs/rules.md), so nothing that
+ * carries a verbatim artifact may be exported, in any memory kind.
+ *
+ * Conservative by design: each alternative targets an artifact shape
+ * (diff headers and hunk markers, patched-file paths, literal answer
+ * preambles, long opaque blobs, bare commit SHAs) that has no business
+ * appearing in an imperative rule. A false negative just costs quality; a
+ * false positive would drop a legitimate rule, so the patterns stay tight.
+ */
+const ANSWER_ARTIFACT_RE =
+  /\bdiff --git\b|@@ -\d|^[+-]{3}\s?(?:a\/|b\/)|\b(?:the )?(?:final )?answer is\b|\bexpected output:?\b/i
+
+/** Long opaque blobs (base64, hex, minified anything) - payloads, not rules. */
+const OPAQUE_BLOB_RE = /[A-Za-z0-9+/=]{60,}|\b[0-9a-f]{40}\b/
+
+/** True when the text carries a verbatim answer artifact and must not be exported. */
+export function isAnswerArtifact(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim()
+  if (OPAQUE_BLOB_RE.test(normalized)) return true
+  return ANSWER_ARTIFACT_RE.test(normalized)
+}
+
 // JSON/shell FRAGMENTS that survive normalization: a claim extracted from a
 // tool call can render as `workdir: "/app",` or `base="$(cat ...)"` - not
 // tool calls by the old patterns (normalization ate the quote), but not
