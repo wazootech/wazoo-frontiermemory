@@ -176,14 +176,16 @@ describe("export self-validation", () => {
     const { report, files } = await exportMemory(dreamReport, dir)
     expect(report.ok).toBeTrue()
     expect(files[0]).toBe("MEMORY.md")
-    expect(files.length).toBeGreaterThan(1)
+    expect(files[1]).toBe("memory_summary.md")
+    expect(files.length).toBeGreaterThan(2)
 
     const memory = await readFile(join(dir, "MEMORY.md"), "utf-8")
     expect(memory.trim().length).toBeGreaterThan(0)
     expect(memory).toContain("# Memory")
     expect(memory).toContain("trajectory")
-    // skill files exist and use the "Use when:" convention
-    for (const file of files.slice(1)) {
+    // skill files exist and use the "Use when:" convention (files[0] is the
+    // MEMORY.md index, files[1] its memory_summary.md copy)
+    for (const file of files.slice(2)) {
       const content = await readFile(join(dir, file), "utf-8")
       expect(content).toContain("Use when")
       expect(content).toContain("Provenance")
