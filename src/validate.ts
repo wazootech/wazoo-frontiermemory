@@ -18,6 +18,13 @@ import { join, relative } from "node:path"
 export const MAX_BYTES = 8 * 1024 * 1024
 export const ENTRY_FILE = "MEMORY.md"
 
+/**
+ * The Codex reference task adapter seeds `$CODEX_HOME/memories/memory_summary.md`
+ * from this file; other reference adapters read MEMORY.md directly. We export
+ * both so the choice of task adapter never changes what the agent sees.
+ */
+export const SUMMARY_FILE = "memory_summary.md"
+
 export interface ValidationReport {
   ok: boolean
   errors: string[]

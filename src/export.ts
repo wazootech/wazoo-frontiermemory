@@ -15,7 +15,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { checkMemory, ENTRY_FILE, type ValidationReport } from "./validate"
+import { checkMemory, ENTRY_FILE, SUMMARY_FILE, type ValidationReport } from "./validate"
 import type { DreamItem, DreamReport } from "./dream"
 
 export interface ExportOptions {
@@ -150,10 +150,17 @@ export async function exportMemory(
   const memoryMd = renderMemoryIndex(report, skillFiles, opts)
   await writeFile(join(outDir, ENTRY_FILE), memoryMd, "utf-8")
 
+  // Reference task adapters differ in which entry file they seed: the Codex
+  // adapter seeds memory_summary.md and copies MEMORY.md into it only when
+  // absent; Claude Code and Hermes read MEMORY.md directly. Exporting the
+  // summary explicitly means every fixed task agent gets our full index,
+  // not an adapter-specific fallback decision.
+  await writeFile(join(outDir, SUMMARY_FILE), memoryMd, "utf-8")
+
   // Self-validate before finishing: a run must not die at the verifier.
   const validation = await checkMemory(outDir)
   if (!validation.ok) {
     throw new Error(`exported memory failed self-validation: ${validation.errors.join("; ")}`)
   }
-  return { report: validation, files: [ENTRY_FILE, ...written] }
+  return { report: validation, files: [ENTRY_FILE, SUMMARY_FILE, ...written] }
 }
