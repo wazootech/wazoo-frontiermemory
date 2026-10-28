@@ -25,7 +25,7 @@
  * performs a web search or touches any other host.
  */
 
-import { mkdir } from "node:fs/promises"
+import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { parseArgs as utilParseArgs } from "node:util"
 import { loadCorpus } from "./corpus"
@@ -159,6 +159,11 @@ async function runExport(args: CliArgs): Promise<void> {
   const { report: validation, files } = await exportMemory(report, args.out)
   console.log(`export: ${files.length} files, ${validation.total_bytes} bytes -> ${args.out}`)
   console.log(`export: self-validation ok (memory_sha256 ${validation.memory_sha256})`)
+  // Persist the self-validation report for the run record and, on the
+  // benchmark, for the submission bundle (Harbor downloads it from the
+  // adapter's logs dir after run()).
+  const validationPath = join(args.state, "memory-validation.json")
+  await writeFile(validationPath, JSON.stringify({ ...validation, files }, null, 2) + "\n")
 }
 
 export async function main(argv: string[]): Promise<number> {
