@@ -23,10 +23,20 @@ Known gaps before upstreaming:
 - `--concurrency` is accepted by the CLI but the pipeline is currently
   sequential per trajectory (skeleton); parallel extraction lands with the
   Phase 2 quality loop.
-- `_get_env` / secret pass-through semantics need verification against the
-  Harbor version the benchmark pins.
-- The TFJS USE download URLs in `install()` need to match the exact weights
-  memorybench's `scripts/download-tfjs-use.ts` fetches (it also caches to a
-  local model dir) — reuse that script's URLs, not hand-rolled ones.
+
+Resolved (2026-10-28, against harbor==0.24.0 source):
+
+- `_get_env` / secret pass-through: `_resolve_env` checks, in order, the
+  options' `Env`-annotated fields, the agent's `extra_env` kwarg, and the
+  host `os.environ`; `exec_as_agent(env=...)` passes per-exec env straight
+  into `environment.exec`. Passing `DEEPSEEK_API_KEY` via `env=` in
+  `exec_as_agent` is correct and matches the openai_sdk reference.
+- TFJS USE URLs now match `scripts/download-tfjs-use.ts` exactly
+  (model.json + 7 shards from tfhub.dev, vocab.json from GCS), and
+  `install()` verifies all nine files exist before run().
+- The pipeline source upload was missing (the old comment claimed the
+  harness framework did it — it does not): `install()` now uploads
+  package.json/bun.lock/bunfig.toml/tsconfig.json plus the whole src/ tree
+  to $REMOTE, the same way upstream adapters upload their drivers.
 - Web-tool disabling is structural here (no tools exist in the pipeline), but
   the submission must still state it explicitly in `SUBMISSION.json`.
