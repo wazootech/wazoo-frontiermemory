@@ -5,6 +5,7 @@ import { join } from "node:path"
 import {
   buildDreamReport,
   consolidateSimilar,
+  isAnswerArtifact,
   isEnvironmentFactClaim,
   jaccardSimilarity,
   type ClaimBinding,
@@ -303,5 +304,30 @@ describe("env-fragment rejection", () => {
         binding({ claimText: "The project virtualenv is at /testbed/.venv.", trajId: "tF2" })
       )
     ).toBeTrue()
+  })
+})
+
+describe("answer-artifact screening (intended usage: no verbatim answers in memory)", () => {
+  const artifact = (s: string) => isAnswerArtifact(s)
+
+  test("rejects diff hunks and patch markers", () => {
+    expect(artifact("apply the diff: diff --git a/src/x.ts b/src/x.ts")).toBeTrue()
+    expect(artifact("hunk starts @@ -12,7 +12,8 @@ then reorder")).toBeTrue()
+    expect(artifact("+++ b/src/index.ts was the fix")).toBeTrue()
+  })
+
+  test("rejects literal answer strings and opaque blobs", () => {
+    expect(artifact("the final answer is 42, submit that verbatim")).toBeTrue()
+    expect(artifact("expected output: [1, 2, 3, 4] exactly")).toBeTrue()
+    expect(artifact(`sha is ${"a".repeat(40)} for the golden file`)).toBeTrue()
+    expect(
+      artifact(`blob ${"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5eg=="}`)
+    ).toBeTrue()
+  })
+
+  test("accepts ordinary imperative rules", () => {
+    expect(artifact("Always run the test suite before committing changes.")).toBeFalse()
+    expect(artifact("The user prefers no big headings or emojis in responses.")).toBeFalse()
+    expect(artifact("Check /root/network_stats.csv for comment lines starting with #.")).toBeFalse()
   })
 })
