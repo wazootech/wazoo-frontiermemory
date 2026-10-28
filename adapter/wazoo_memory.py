@@ -87,17 +87,42 @@ class WazooMemory(BaseInstalledAgent):
         # harness framework from the adapter package directory; the TFJS USE
         # weights are fetched here because the generation sandbox cannot fetch
         # them (only the memory model's API host is allowed during run()).
+        # URLs match memorybench's scripts/download-tfjs-use.ts exactly: the
+        # USE lite graph is a model.json plus 7 weight shards, and the
+        # vocabulary lives in a separate GCS bucket.
         model_cmd = (
             f"mkdir -p {TFJS_MODEL_DIR} && "
             "curl -fsSL -o " + f"{TFJS_MODEL_DIR}/model.json" + " "
-            "https://storage.googleapis.com/tfjs-models/tfjs-weights/universal-sentence-encoder/model.json && "
+            "'https://tfhub.dev/tensorflow/tfjs-model/universal-sentence-encoder-lite/1/default/1/model.json?tfjs-format=file' && "
             "curl -fsSL -o " + f"{TFJS_MODEL_DIR}/vocab.json" + " "
-            "https://storage.googleapis.com/tfjs-models/tfjs-weights/universal-sentence-encoder/vocab.json"
+            "https://storage.googleapis.com/tfjs-models/savedmodel/universal_sentence_encoder/vocab.json && "
+            + " && ".join(
+                "curl -fsSL -o "
+                + f"{TFJS_MODEL_DIR}/group1-shard{i + 1}of7"
+                + " "
+                + f"'https://tfhub.dev/tensorflow/tfjs-model/universal-sentence-encoder-lite/1/default/1/group1-shard{i + 1}of7?tfjs-format=file'"
+                for i in range(7)
+            )
         )
-        model_result = await self.exec_as_root(environment, command=model_cmd, timeout_sec=300)
+        model_result = await self.exec_as_root(environment, command=model_cmd, timeout_sec=900)
         (self.logs_dir / "setup" / "tfjs-model.log").write_text(
             (model_result.stdout or "") + (model_result.stderr or "")
         )
+        # Fail the install if any weight is missing: a partial model loads
+        # during run(), wastes part of the 6-hour window, and produces a
+        # degraded embedding quality that is hard to notice from the outside.
+        verify_cmd = (
+            f"test -f {TFJS_MODEL_DIR}/model.json && "
+            f"test -f {TFJS_MODEL_DIR}/vocab.json && "
+            + " && ".join(
+                f"test -f {TFJS_MODEL_DIR}/group1-shard{i + 1}of7" for i in range(7)
+            )
+        )
+        verify = await self.exec_as_root(environment, command=verify_cmd, timeout_sec=60)
+        if verify.exit_code != 0:
+            raise RuntimeError(
+                "TFJS USE model download incomplete; see setup/tfjs-model.log"
+            )
 
     async def run(self, instruction: str, environment, context: Any) -> None:
         """Generation phase: only api.deepseek.com is reachable here."""
@@ -139,7 +164,10 @@ class WazooMemory(BaseInstalledAgent):
             raise
         finally:
             self.logs_dir.mkdir(parents=True, exist_ok=True)
-            # Collect the pipeline's own validation report for the bundle.
+            # Collect the pipeline's own validation report for the bundle. The
+            # pipeline writes it next to its state under --state; both the
+            # state dir and the exported memory land under /opt/wazoo-memory,
+            # readable by the agent user that ran the pipeline.
             try:
                 await environment.download_file(
                     f"{REMOTE}/state/memory-validation.json",
