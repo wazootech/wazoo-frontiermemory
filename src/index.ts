@@ -56,6 +56,13 @@ export interface CliArgs {
 
 const USAGE = `usage: bun run src/index.ts <ingest|dream|export|all> --corpus <dir> --out <dir>`
 
+/**
+ * Cap on rendered extraction-prompt events (run 0002). Keeps every call
+ * within model context; oversized trajectories fall back to the
+ * deterministic extractor for the events past the cap.
+ */
+const EXTRACTION_MAX_PROMPT_EVENTS = 200
+
 export function parseArgs(argv: string[]): CliArgs {
   // Bun's node:util shim (and its types) only implements the config-only form
   // of util.parseArgs, which reads process.argv.slice(2) and ignores the
@@ -114,6 +121,12 @@ async function runIngest(args: CliArgs): Promise<IngestState> {
       batch.map(async (traj) => {
         const extracted = await extractClaimsForTrajectory(traj, {
           fallbackOnly: args.fallbackOnly,
+          // Run 0002 finding: the corpus's largest trajectory (t0261, 17.7 MB)
+          // renders a ~1.48 M-token prompt that can never complete; capping
+          // prompt events keeps 95.8% of trajectories whole (median 28
+          // events, p95 179, max 518), bounds every call within context, and
+          // lets the deterministic fallback carry the tail.
+          maxPromptEvents: EXTRACTION_MAX_PROMPT_EVENTS,
         })
         console.log(`  ${traj.trajId}: ${extracted.length} claims (outcome ${traj.outcome})`)
         return extracted
