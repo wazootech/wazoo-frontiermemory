@@ -273,3 +273,35 @@ describe("header reports trajectory counts, not claim counts", () => {
     expect(header).toContain("Learned from 2 agent trajectories (1 PASS, 1 FAIL, 0 unlabeled)")
   })
 })
+
+describe("env-fragment rejection", () => {
+  test("rejects JSON fragments that survived normalization", () => {
+    expect(
+      isEnvironmentFactClaim(binding({ claimText: 'workdir: "/app",', trajId: "tF1" }))
+    ).toBeFalse()
+    expect(
+      isEnvironmentFactClaim(
+        binding({ claimText: 'base="$(cat /tmp/base_commit.txt)"', trajId: "tF1" })
+      )
+    ).toBeFalse()
+    expect(
+      isEnvironmentFactClaim(binding({ claimText: "mkdir -p /logs/agent", trajId: "tF1" }))
+    ).toBeFalse()
+  })
+
+  test("still accepts real environment facts", () => {
+    expect(
+      isEnvironmentFactClaim(
+        binding({
+          claimText: "The file /root/network_stats.csv contains comment lines starting with #.",
+          trajId: "tF2",
+        })
+      )
+    ).toBeTrue()
+    expect(
+      isEnvironmentFactClaim(
+        binding({ claimText: "The project virtualenv is at /testbed/.venv.", trajId: "tF2" })
+      )
+    ).toBeTrue()
+  })
+})
