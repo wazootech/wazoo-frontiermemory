@@ -12,7 +12,10 @@ of letta-ai/frontiermemory (repo commit `49bea0f`).
 git clone https://github.com/letta-ai/frontiermemory && cd frontiermemory
 git clone https://github.com/wazootech/wazoo-frontiermemory
 cp -r wazoo-frontiermemory/adapter/wazoo_memory.py src/frontier_memory/agents/wazoo_memory.py
-# (until the harness-submission PR lands, the draft adapter rides in-tree)
+# The adapter stages the pipeline itself: it resolves the repo root as
+# Path(__file__).parent.parent, so the checkout layout must be exactly this
+# (wazoo-frontiermemory next to frontiermemory, src/ + manifests at its root).
+# All of that is already true after the two clones above.
 
 uv venv --python 3.12 && source .venv/bin/activate
 uv pip install -e .
@@ -22,6 +25,14 @@ export DEEPSEEK_API_KEY=...    # memory model (our pipeline's client)
 export OPENAI_API_KEY=...      # task agent (gpt-6-sol via codex harness)
 modal token new                # or MODAL_TOKEN_ID/MODAL_TOKEN_SECRET
 ```
+
+**Adapter status (2026-10-28):** the memory adapter is tested against the
+smoke corpus and current on `harbor==0.24.0` semantics: it stages the pipeline
+source itself, installs Bun, downloads the nine USE-lite files with verified
+URLs, passes `DEEPSEEK_API_KEY` via `exec_as_agent(env=...)` (verified against
+`_resolve_env` precedence), and the pipeline persists its self-validation
+report where the adapter collects it. `_get_env`/secret pass-through and the
+USE URLs are no longer open questions.
 
 **Corpus revision matters:** the benchmark pins corpus digest
 `c7d31214…`, but the HF dataset's `main` branch is now v1.1 (2026-10-24) and does
