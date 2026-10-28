@@ -236,6 +236,15 @@ const TOOL_NAME_RE =
 /** Verbatim tool-call payloads: execution traces, not environment state. */
 const TOOL_DUMP_RE = /\bTool exec:|exec_command|await tools\.|"cmd":|workdir":/
 
+// JSON/shell FRAGMENTS that survive normalization: a claim extracted from a
+// tool call can render as `workdir: "/app",` or `base="$(cat ...)"` - not
+// tool calls by the old patterns (normalization ate the quote), but not
+// environment facts either. Also reject bare command fragments like
+// `mkdir -p /logs/agent`: a directory the agent created is an event, and the
+// fact it supports gets its own sentence from extraction.
+const ENV_FRAGMENT_RE =
+  /^(?:[a-z_]+:\s*["{\[]|[a-z_]+="\$|mkdir -p |cd |export |source |echo |sed -n |printf |rg -n |find )/
+
 /** Task-problem statements: someone asking for work, not how the box is set up. */
 const TASK_REQUEST_RE =
   /^(?:the )?user (?:tasked|asked|instructed|requested|wanted|requires|required)\b/i
@@ -262,6 +271,7 @@ export function isEnvironmentFactClaim(b: ClaimBinding): boolean {
   if (text.length === 0 || text.length > ENV_FACT_MAX_CHARS) return false
   if (/\n/.test(b.claimText)) return false
   if (TOOL_DUMP_RE.test(b.claimText)) return false
+  if (ENV_FRAGMENT_RE.test(text)) return false
   if (TASK_REQUEST_RE.test(text)) return false
   if (TASK_REQUIREMENT_RE.test(text)) return false
   if (ASSISTANT_NARRATION_RE.test(text)) return false
