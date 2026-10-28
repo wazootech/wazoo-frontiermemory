@@ -47,6 +47,18 @@ REMOTE = "/opt/wazoo-memory"
 PIPELINE_ENTRY = f"{REMOTE}/src/index.ts"
 TFJS_MODEL_DIR = f"{REMOTE}/models/tfjs-use"
 
+# Pipeline package files staged into the container before bun install. Harbor
+# does not copy the agent's own package into the environment; the adapter
+# uploads the pipeline itself, the way upstream adapters upload their drivers
+# (e.g. hermes.py uploads hermes_dream.__file__ to its REMOTE). The repo root
+# is resolved relative to this file: adapter/wazoo_memory.py -> parent.parent.
+PIPELINE_FILES = (
+    "package.json",
+    "bun.lock",
+    "bunfig.toml",
+    "tsconfig.json",
+)
+
 
 class WazooMemoryOptions(InstalledAgentOptions):
     """Tunables for the memory-generation run."""
@@ -71,7 +83,12 @@ class WazooMemory(BaseInstalledAgent):
         return "0.1.0"
 
     async def install(self, environment) -> None:
-        """Setup phase: internet available. Install Bun and stage the pipeline."""
+        """Setup phase: internet available. Stage source, install Bun, fetch model."""
+        repo_root = Path(__file__).resolve().parent.parent
+        await self.exec_as_root(environment, command=f"mkdir -p {REMOTE}")
+        for rel in PIPELINE_FILES:
+            await environment.upload_file(repo_root / rel, f"{REMOTE}/{rel}")
+        await environment.upload_dir(repo_root / "src", f"{REMOTE}/src")
         install_cmd = (
             "set -eu; "
             "if ! command -v bun >/dev/null 2>&1; then "
@@ -83,10 +100,9 @@ class WazooMemory(BaseInstalledAgent):
         (self.logs_dir / "setup" / "bun-install.log").write_text(
             (result.stdout or "") + (result.stderr or "")
         )
-        # The pipeline source (src/, package.json, bun.lock) is uploaded by the
-        # harness framework from the adapter package directory; the TFJS USE
-        # weights are fetched here because the generation sandbox cannot fetch
-        # them (only the memory model's API host is allowed during run()).
+        # The pipeline source was uploaded above; the TFJS USE weights are
+        # fetched here because the generation sandbox cannot fetch them (only
+        # the memory model's API host is allowed during run()).
         # URLs match memorybench's scripts/download-tfjs-use.ts exactly: the
         # USE lite graph is a model.json plus 7 weight shards, and the
         # vocabulary lives in a separate GCS bucket.
