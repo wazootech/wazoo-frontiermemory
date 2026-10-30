@@ -34,13 +34,16 @@ URLs, passes `DEEPSEEK_API_KEY` via `exec_as_agent(env=...)` (verified against
 report where the adapter collects it. `_get_env`/secret pass-through and the
 USE URLs are no longer open questions.
 
-**Corpus revision matters:** the benchmark pins corpus digest
-`c7d31214…`, but the HF dataset's `main` branch is now v1.1 (2026-10-24) and does
-NOT match. `fetch-corpus` defaults to `main`, so pass `--revision v1.0`
-explicitly. (`fetch-corpus` verifies every file and refuses on digest mismatch.)
+**Corpus revision (updated 2026-10-30):** the leaderboard corpus is now **v1.1 —
+750 trajectories** (changelog 2026-10-29: rebalanced to reduce reward hacking via
+trajectory metadata). We target v1.1 for every run from now on; v1.0 (674
+trajectories) remains what the public repo's `RELEASE_SHA256` pins, and
+`fetch-corpus` now defaults to that pinned revision (upstream fixed it on
+2026-10-27). To score against the same corpus the leaderboard uses, pass the
+revision explicitly:
 
 ```bash
-frontier-memory fetch-corpus --out data/corpus/joint-674 --revision v1.0
+frontier-memory fetch-corpus --out data/corpus/joint-750 --revision v1.1
 ```
 
 ## The three commands (screening, memory-only submission)
@@ -49,7 +52,7 @@ frontier-memory fetch-corpus --out data/corpus/joint-674 --revision v1.0
 # 1) Memory generation: our pipeline inside the Harbor sandbox,
 #    only api.deepseek.com reachable. ~1h expected (measured extrapolation
 #    0.92h at concurrency 4; budget is 6h).
-frontier-memory generate-memory --corpus data/corpus/joint-674 \
+frontier-memory generate-memory --corpus data/corpus/joint-750 \
   --harness frontier_memory.agents.wazoo_memory:WazooMemoryAgent \
   -m deepseek/deepseek-v4-flash \
   --allow-host api.deepseek.com \
@@ -71,6 +74,7 @@ frontier-memory score jobs/wazoo-screen-control-1
 ```
 
 Notes:
+
 - The exact DeepSeek model handle (`deepseek/…`) should be confirmed against
   litellm's slug for the model our extraction config used locally before
   running step 1; `-m` is what the submission records, while the pipeline
@@ -112,7 +116,7 @@ the DeepSeek task agent and `-m deepseek/deepseek-v4-flash` for BOTH stages:
 
 ```bash
 # 1) Memory generation (unchanged): our pipeline, DeepSeek as memory model.
-frontier-memory generate-memory --corpus data/corpus/joint-674 \
+frontier-memory generate-memory --corpus data/corpus/joint-750 \
   --harness frontier_memory.agents.wazoo_memory:WazooMemoryAgent \
   -m deepseek/deepseek-v4-flash \
   --allow-host api.deepseek.com \
@@ -140,6 +144,7 @@ frontier-memory score jobs/wazoo-ab-control-1
 ```
 
 Caveats:
+
 - The delta measured here is with a weaker task model: a memory that helps a
   DeepSeek agent may not transfer to GPT-6 Sol (and vice versa). Read it as a
   go/no-go signal, not a score prediction.
