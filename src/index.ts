@@ -32,7 +32,7 @@ import { loadCorpus } from "./corpus"
 import { extractClaimsForTrajectory } from "./extraction"
 import { importGraph } from "./graph"
 import { dream } from "./dream"
-import { exportMemory } from "./export"
+import { exportMemory, type ExportOptions } from "./export"
 import {
   readDreamState,
   readIngestState,
@@ -169,7 +169,16 @@ async function runDream(args: CliArgs, state?: IngestState): Promise<void> {
 async function runExport(args: CliArgs): Promise<void> {
   const report = await readDreamState(args.state)
   await mkdir(args.out, { recursive: true })
-  const { report: validation, files } = await exportMemory(report, args.out)
+  // The claim list sits beside dream.json in the state dir and feeds family
+  // classification and resolving details; its absence degrades the export,
+  // never blocks it (an export-only re-run must keep working).
+  let claims: ExportOptions["claims"]
+  try {
+    claims = (await readIngestState(args.state)).claims
+  } catch {
+    claims = undefined
+  }
+  const { report: validation, files } = await exportMemory(report, args.out, { claims })
   console.log(`export: ${files.length} files, ${validation.total_bytes} bytes -> ${args.out}`)
   console.log(`export: self-validation ok (memory_sha256 ${validation.memory_sha256})`)
   // Persist the self-validation report for the run record and, on the
