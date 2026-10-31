@@ -179,11 +179,38 @@ export function serializeClaim(claim: Claim): string {
   return lines.join("\n")
 }
 
+/**
+ * The SPARQL engine's Turtle parser rejects \u escapes in the surrogate range
+ * with "Invalid Unicode escape (surrogate code point)" (turtle-generated.ts
+ * decodeUchar). Extraction text can contain lone surrogates as literal
+ * characters (emoji split by naive upstream truncation); JSON.stringify
+ * serializes such a string with the literal escape \ud83c, and import then
+ * dies on it - observed on a real full-corpus Modal run (wazoo-ab-memory-10,
+ * after ~56 minutes including the full extraction spend: worst-case cost,
+ * zero artifact). Fix at the serialization boundary: pair any lone surrogate
+ * with the replacement character so the Turtle stays parseable while the
+ * provenance records what happened.
+ */
+const LONE_HIGH = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g
+const LONE_LOW = /(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+export function sanitizeLoneSurrogates(text: string): string {
+  return text.replace(LONE_HIGH, "\uFFFD").replace(LONE_LOW, (_m, lead) => `${lead}\uFFFD`)
+}
+
 export function serializeGraph(trajs: Trajectory[], claims: Claim[]): string {
   const blocks = [TURTLE_PREFIXES, ""]
-  for (const traj of trajs) blocks.push(serializeTrajectory(traj), "")
-  for (const claim of claims) blocks.push(serializeClaim(claim), "")
+  for (const traj of trajs) blocks.push(serializeTrajectory(sanitize(traj)), "")
+  for (const claim of claims) blocks.push(serializeClaim(sanitize(claim)), "")
   return blocks.join("\n")
+}
+
+function sanitize<T extends object>(value: T): T {
+  return Object.fromEntries(
+    Object.entries(value).map(([k, v]) => [
+      k,
+      typeof v === "string" ? sanitizeLoneSurrogates(v) : v,
+    ])
+  ) as T
 }
 
 /** Import claims into a fresh embedded store. Returns the open client. */
