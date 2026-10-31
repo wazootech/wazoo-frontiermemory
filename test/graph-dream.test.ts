@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { loadCorpus } from "../src/corpus"
 import { extractClaimsFallback } from "../src/extraction"
 import type { Claim } from "../src/extraction"
+import type { Trajectory } from "../src/corpus"
 import { importGraph, serializeGraph } from "../src/graph"
 import { dream, buildDreamReport, normalizePatternKey } from "../src/dream"
 
@@ -162,6 +163,44 @@ describe("lone-surrogate sanitization (wazoo-ab-memory-10 regression)", () => {
       outcome: "PASS",
     }
     const turtle = serializeGraph([], [claim])
+    expect(turtle).toContain("\ud83d\ude80")
+  })
+})
+
+describe("deep surrogate sanitization (wazoo-ab-memory-12 regression)", () => {
+  test("covers event text nested inside trajectory events[]", async () => {
+    const traj: Trajectory = {
+      trajId: "tSurr",
+      path: "tSurr.json",
+      sessionId: "s",
+      events: [
+        {
+          turn: 2,
+          speaker: "assistant",
+          text: "Saved report \ud83c for review.",
+          eventType: "message",
+        },
+      ],
+      outcome: "FAIL",
+      lineCount: 3,
+    }
+    const turtle = serializeGraph([traj], [])
+    expect(turtle).not.toMatch(/\\ud83c/i)
+    expect(turtle).toContain("\uFFFD")
+  })
+
+  test("keeps valid emoji pairs nested in events", () => {
+    const traj: Trajectory = {
+      trajId: "tSurr2",
+      path: "tSurr2.json",
+      sessionId: "s",
+      events: [
+        { turn: 1, speaker: "assistant", text: "shipped \ud83d\ude80", eventType: "message" },
+      ],
+      outcome: "PASS",
+      lineCount: 2,
+    }
+    const turtle = serializeGraph([traj], [])
     expect(turtle).toContain("\ud83d\ude80")
   })
 })

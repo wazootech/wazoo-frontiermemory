@@ -204,13 +204,22 @@ export function serializeGraph(trajs: Trajectory[], claims: Claim[]): string {
   return blocks.join("\n")
 }
 
-function sanitize<T extends object>(value: T): T {
-  return Object.fromEntries(
-    Object.entries(value).map(([k, v]) => [
-      k,
-      typeof v === "string" ? sanitizeLoneSurrogates(v) : v,
-    ])
-  ) as T
+/**
+ * Deep-sanitize: recurse objects and arrays so nested string fields are
+ * covered. The shallow version (PR #16) missed event.text inside a
+ * trajectory's events[] array — serializeTrajectory emits those as Turtle
+ * literals, so a lone surrogate there still killed the parser on Modal
+ * (wazoo-ab-memory-12, identical error to memory-10 despite #16).
+ */
+function sanitize<T>(value: T): T {
+  if (typeof value === "string") return sanitizeLoneSurrogates(value) as unknown as T
+  if (Array.isArray(value)) return value.map((item) => sanitize(item)) as unknown as T
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, sanitize(v)])
+    ) as unknown as T
+  }
+  return value
 }
 
 /** Import claims into a fresh embedded store. Returns the open client. */

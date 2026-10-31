@@ -61,6 +61,11 @@ class SourceContract(unittest.TestCase):
         self.assertIn("return_code", src)
         self.assertNotIn("verify.exit_code", src)
 
+    def test_resume_claims_from_is_wired(self):
+        src = ADAPTER.read_text()
+        self.assertIn("resume_claims_from", src)
+        self.assertIn('resume_claims_from: str | None', src)
+
     def test_pipeline_root_handles_both_layouts(self):
         src = ADAPTER.read_text()
         self.assertIn("wazoo-frontiermemory", src)  # sibling candidate

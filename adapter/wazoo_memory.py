@@ -102,6 +102,10 @@ class WazooMemoryOptions(InstalledAgentOptions):
     # ingest, e.g. a run that died after the extraction spend). The pipeline's
     # --resume-from-claims makes a post-ingest crash a no-cost retry.
     resume_from_claims: bool = False
+    # Host path to a RESCUED claims.json (logs/state/claims.json from a failed
+    # run). When set, install() uploads it into the container state dir and
+    # run() appends --resume-from-claims automatically.
+    resume_claims_from: str | None = Field(default=None)
 
 
 class WazooMemory(BaseInstalledAgent):
@@ -118,6 +122,17 @@ class WazooMemory(BaseInstalledAgent):
         """Setup phase: internet available. Stage source, install Bun, fetch model."""
         repo_root = _pipeline_root()
         await self.exec_as_root(environment, command=f"mkdir -p {REMOTE}")
+        rescued = self.options.resume_claims_from  # type: ignore[attr-defined]
+        if rescued:
+            await self.exec_as_root(
+                environment, command=f"mkdir -p {REMOTE}/state", timeout_sec=60
+            )
+            await environment.upload_file(
+                Path(rescued), f"{REMOTE}/state/claims.json"
+            )
+            (self.logs_dir / "setup" / "resume-upload.log").write_text(
+                f"uploaded {rescued} -> {REMOTE}/state/claims.json"
+            )
         for rel in PIPELINE_FILES:
             await environment.upload_file(repo_root / rel, f"{REMOTE}/{rel}")
         await environment.upload_dir(repo_root / "src", f"{REMOTE}/src")
@@ -210,7 +225,8 @@ class WazooMemory(BaseInstalledAgent):
             command.append("--fallback-only")
         if self.options.limit is not None:  # type: ignore[attr-defined]
             command += ["--limit", str(self.options.limit)]
-        if self.options.resume_from_claims:  # type: ignore[attr-defined]
+        seeding = self.options.resume_claims_from is not None  # type: ignore[attr-defined]
+        if self.options.resume_from_claims or seeding:  # type: ignore[attr-defined]
             command.append("--resume-from-claims")
 
         failed = False
