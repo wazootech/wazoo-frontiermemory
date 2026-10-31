@@ -69,12 +69,45 @@ function hashToken(token: string): number {
  * generation sandbox there is no network beyond the model API host, so the
  * weights must already be on disk.
  */
+/**
+ * Wrap an embedding service with a batched call pattern. The sqlite SDK calls
+ * embed(uniqueTexts) with EVERY chunk text at once - 11.4k unique strings for
+ * the full corpus - and tfjs wasm holds the model + activations + all output
+ * vectors in one pass. Peak RSS locally: >3GB, fine on a 4GB box, OOM-killed
+ * on Modal's smaller task containers (wazoo-ab-memory-13: died mid-dream with
+ * the generic "failed to vectorize literal chunk blocks" wrapper, seconds
+ * after resume skipped the extraction). Batching bounds peak memory per call.
+ */
+export function withEmbeddingBatches(service: EmbeddingService, batchSize = 256): EmbeddingService {
+  return {
+    async embed(texts: string[]): Promise<Float32Array[]> {
+      const out: Float32Array[] = []
+      for (let i = 0; i < texts.length; i += batchSize) {
+        const batch = texts.slice(i, i + batchSize)
+        const vectors = await service.embed(batch)
+        out.push(...(vectors as Float32Array[]))
+      }
+      return out
+    },
+  } as EmbeddingService
+}
+
 export async function loadTfjsUseEmbeddingService(modelDir: string): Promise<EmbeddingService> {
   const mod = await import("@worlds/sdk/tfjs-use")
   const service = new mod.UniversalSentenceEncoderEmbeddingService({
     modelUrl: join(modelDir, "model.json"),
     vocabUrl: join(modelDir, "vocab.json"),
   }) as unknown as EmbeddingService
+  // The SDK constructor calls tf.setBackend("wasm") without awaiting it;
+  // our immediate smoke embed can outrun backend init (it did locally once
+  // batching made the first embed near-instant). Await readiness explicitly.
+  try {
+    const tf = await import("@tensorflow/tfjs")
+    await tf.ready()
+  } catch {
+    // if tfjs import fails here, the embed attempt below surfaces it with
+    // the named-file context anyway
+  }
   // Fail HERE with a named file, not deep inside import with the SDK's generic
   // "failed to vectorize literal chunk blocks" (observed on a real Modal run:
   // tfhub had served an HTML error page as model.json, and the true cause was
@@ -103,7 +136,7 @@ export async function createGraphClient(opts: {
   searchIndexOnImport?: "incremental" | "disabled"
 }): Promise<SqliteWorldsSdk> {
   if (opts.modelDir) {
-    const embeddingService = await loadTfjsUseEmbeddingService(opts.modelDir)
+    const embeddingService = withEmbeddingBatches(await loadTfjsUseEmbeddingService(opts.modelDir))
     return createSqliteWorldsSdk({
       path: opts.dbPath,
       db: opts.db ?? new Database(opts.dbPath),
