@@ -42,23 +42,33 @@ const NO_FAMILIES: PruningContext = {
 }
 
 function verdictOf(items: DreamItem[], config?: PruningConfig): Map<string, string> {
-  const decisions = pruneItems(items, NO_FAMILIES, config ?? { ...DEFAULT_PRUNING_CONFIG, topPerKind: 0 })
+  const decisions = pruneItems(
+    items,
+    NO_FAMILIES,
+    config ?? { ...DEFAULT_PRUNING_CONFIG, topPerKind: 0 }
+  )
   return new Map([...decisions].map(([key, d]) => [key, d.verdict]))
 }
 
 describe("pruning verdicts", () => {
   test("support >= 3 is kept as an index item", () => {
-    const decisions = verdictOf([item({ key: "a", support: 3, evidence: evidence(["PASS", "PASS", "FAIL"]) })])
+    const decisions = verdictOf([
+      item({ key: "a", support: 3, evidence: evidence(["PASS", "PASS", "FAIL"]) }),
+    ])
     expect(decisions.get("a")).toBe("index")
   })
 
   test("support = 2 with mixed evidence is kept (contested-with-resolution)", () => {
-    const decisions = verdictOf([item({ key: "a", support: 2, evidence: evidence(["PASS", "FAIL"]) })])
+    const decisions = verdictOf([
+      item({ key: "a", support: 2, evidence: evidence(["PASS", "FAIL"]) }),
+    ])
     expect(decisions.get("a")).toBe("index")
   })
 
   test("support = 2 all-PASS is kept (verified-works)", () => {
-    const decisions = verdictOf([item({ key: "a", support: 2, evidence: evidence(["PASS", "PASS"]) })])
+    const decisions = verdictOf([
+      item({ key: "a", support: 2, evidence: evidence(["PASS", "PASS"]) }),
+    ])
     expect(decisions.get("a")).toBe("index")
   })
 
@@ -74,7 +84,14 @@ describe("pruning verdicts", () => {
 
   test("fail-caution items never render as numbered rules in MEMORY.md", async () => {
     const report: DreamReport = {
-      taskRules: [item({ key: "bad rule", support: 1, evidence: evidence(["FAIL"]), instruction: "Do the bad thing" })],
+      taskRules: [
+        item({
+          key: "bad rule",
+          support: 1,
+          evidence: evidence(["FAIL"]),
+          instruction: "Do the bad thing",
+        }),
+      ],
       userPreferences: [],
       environmentFacts: [],
       stats: { claims: 1, trajectories: 1, pass: 0, fail: 1, unknown: 0 },
@@ -83,9 +100,13 @@ describe("pruning verdicts", () => {
     try {
       await exportMemory(report, out)
       const memory = await readFile(join(out, "MEMORY.md"), "utf-8")
-      // Not a rule line; it renders as a one-line caution under Known failures.
+      // Not a rule line; a 1-of-1 renders as a demoted anecdote line under
+      // Known failures, visibly lighter than a repeated-failure pattern.
       expect(memory).not.toMatch(/^1\. Do the bad thing/m)
       expect(memory).toContain(
+        "- Failed once: Do the bad thing (1 attempt; anecdote, not a pattern)"
+      )
+      expect(memory).not.toContain(
         "- Verified FAIL: Do the bad thing (1 of 1 evidence trajectories failed)"
       )
     } finally {
@@ -133,9 +154,10 @@ describe("pruning verdicts", () => {
       ...context,
       familyTrajectoryCounts: new Map([["pcap", 4]]),
     }
-    expect(pruneItems([lonely], small, { ...DEFAULT_PRUNING_CONFIG, topPerKind: 0 }).get("lonely")?.verdict).toBe(
-      "skill-only"
-    )
+    expect(
+      pruneItems([lonely], small, { ...DEFAULT_PRUNING_CONFIG, topPerKind: 0 }).get("lonely")
+        ?.verdict
+    ).toBe("skill-only")
   })
 })
 
@@ -189,11 +211,26 @@ describe("no item loses its skill file", () => {
         item({ key: "singleton rule", support: 1, evidence: evidence(["PASS"]) }),
       ],
       userPreferences: [
-        item({ key: "kept pref", kind: "user-preference", support: 3, evidence: evidence(["PASS", "PASS", "PASS"]) }),
-        item({ key: "singleton pref", kind: "user-preference", support: 1, evidence: evidence(["PASS"]) }),
+        item({
+          key: "kept pref",
+          kind: "user-preference",
+          support: 3,
+          evidence: evidence(["PASS", "PASS", "PASS"]),
+        }),
+        item({
+          key: "singleton pref",
+          kind: "user-preference",
+          support: 1,
+          evidence: evidence(["PASS"]),
+        }),
       ],
       environmentFacts: [
-        item({ key: "kept env", kind: "environment-fact", support: 3, evidence: evidence(["PASS", "PASS", "PASS"]) }),
+        item({
+          key: "kept env",
+          kind: "environment-fact",
+          support: 3,
+          evidence: evidence(["PASS", "PASS", "PASS"]),
+        }),
       ],
       stats: { claims: 10, trajectories: 5, pass: 8, fail: 2, unknown: 0 },
     }
@@ -206,7 +243,10 @@ describe("no item loses its skill file", () => {
       expect(pruning.summary.skillOnly).toBe(2)
       const files = await readdir(join(out, "skills"))
       expect(files.length).toBe(6)
-      for (const target of report.taskRules.concat(report.userPreferences, report.environmentFacts)) {
+      for (const target of report.taskRules.concat(
+        report.userPreferences,
+        report.environmentFacts
+      )) {
         const matches: string[] = []
         for (const f of files) {
           const content = await readFile(join(out, "skills", f), "utf-8")

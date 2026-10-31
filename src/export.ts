@@ -236,7 +236,12 @@ function byRank(a: DreamItem, b: DreamItem): number {
 
 interface Organized {
   sections: FamilySection[]
-  general: { rules: DreamItem[]; preferences: DreamItem[]; envFacts: DreamItem[]; failCautions: DreamItem[] }
+  general: {
+    rules: DreamItem[]
+    preferences: DreamItem[]
+    envFacts: DreamItem[]
+    failCautions: DreamItem[]
+  }
 }
 
 /**
@@ -290,7 +295,12 @@ export function organizeByFamily(
       envFacts: [],
     })
   }
-  const general: Organized["general"] = { rules: [], preferences: [], envFacts: [], failCautions: [] }
+  const general: Organized["general"] = {
+    rules: [],
+    preferences: [],
+    envFacts: [],
+    failCautions: [],
+  }
   const place = (item: DreamItem): void => {
     const familyId = familyOf(item, item.kind)
     const section = familyId ? byFamily.get(familyId) : undefined
@@ -310,12 +320,16 @@ export function organizeByFamily(
     }
   }
   for (const item of rendered) place(item)
-  // Fail-only items carry a family section's caution lines. They order by
-  // concreteness of the pattern's claim text (the most concrete failure
-  // reads best as a one-liner), not by support — they are all support<3.
-  const concretenessOf = (a: DreamItem, b: DreamItem): number =>
-    concreteness(b.text) - concreteness(a.text) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
-  for (const item of cautions) {
+  // Fail-only items carry a family section's caution lines. Ordering puts
+  // repeated failures first: a caution backed by multiple failed runs is a
+  // pattern, a 1-of-1 is an anecdote — the latter renders only when slots
+  // remain, so single-run noise cannot crowd out real negative evidence.
+  const evidenceCountOf = (i: DreamItem): number => i.evidence.length
+  const cautionOrder = (a: DreamItem, b: DreamItem): number =>
+    evidenceCountOf(b) - evidenceCountOf(a) ||
+    concreteness(b.text) - concreteness(a.text) ||
+    (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+  for (const item of [...cautions].sort(cautionOrder)) {
     const familyId = familyOf(item, item.kind)
     const section = familyId ? byFamily.get(familyId) : undefined
     if (!section) {
@@ -342,11 +356,11 @@ export function organizeByFamily(
   general.rules.sort(byRank)
   general.preferences.sort(byRank)
   general.envFacts.sort(byRank)
-  general.failCautions.sort(concretenessOf)
+  general.failCautions.sort(cautionOrder)
   for (const section of sections) {
     section.rules.sort(byRank)
     section.knownFailures.sort(byRank)
-    section.failCautions.sort(concretenessOf)
+    section.failCautions.sort(cautionOrder)
     section.preferences.sort(byRank)
     section.envFacts.sort(byRank)
   }
@@ -386,9 +400,17 @@ function renderKnownFailures(items: DreamItem[]): string[] {
   })
 }
 
-/** Fail-only cautions render in the same one-line style, capped per family. */
+/** Fail-only cautions render in the same one-line style, capped per family.
+ *  1-of-1 anecdotes are demoted to a visually lighter form: a task agent must
+ *  be able to tell "failed 8 of 11 times" (a trap) from "one agent misread one
+ *  task once" (an anecdote) at a glance. */
 function renderFailCautions(items: DreamItem[], cap: number): string[] {
-  return renderKnownFailures(items.slice(0, cap))
+  const rendered = items.slice(0, cap)
+  return rendered.map((item) => {
+    const { fail, total } = failCounts(item)
+    if (total >= 2) return renderKnownFailures([item])[0]
+    return `- Failed once: ${item.instruction} (1 attempt; anecdote, not a pattern)`
+  })
 }
 
 function renderMemoryIndex(
@@ -526,11 +548,7 @@ export async function exportMemory(
     if (!family) continue
     familyTrajectoryCounts.set(family, (familyTrajectoryCounts.get(family) ?? 0) + 1)
   }
-  const decisions = pruneItems(
-    allItems,
-    { familyOf, familyTrajectoryCounts },
-    pruningConfig
-  )
+  const decisions = pruneItems(allItems, { familyOf, familyTrajectoryCounts }, pruningConfig)
   const pruning = pruningReport(decisions, pruningConfig)
 
   const organized = organizeByFamily(report, opts.claims, decisions)
