@@ -2,7 +2,8 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { join } from "node:path"
 import { loadCorpus } from "../src/corpus"
 import { extractClaimsFallback } from "../src/extraction"
-import { importGraph } from "../src/graph"
+import type { Claim } from "../src/extraction"
+import { importGraph, serializeGraph } from "../src/graph"
 import { dream, buildDreamReport, normalizePatternKey } from "../src/dream"
 
 const FIXTURE_CORPUS = join(import.meta.dir, "fixtures", "corpus")
@@ -122,5 +123,45 @@ describe("dream phase", () => {
     expect(Array.isArray(report.userPreferences)).toBeTrue()
     expect(Array.isArray(report.environmentFacts)).toBeTrue()
     client.close()
+  })
+})
+
+describe("lone-surrogate sanitization (wazoo-ab-memory-10 regression)", () => {
+  test("serializes claims containing lone surrogates without parser errors", async () => {
+    const claim: Claim = {
+      id: "urn:claim:surr:1",
+      type: "fact",
+      subject: "x",
+      action: "did",
+      object: "y",
+      claimText: "The output file \ud83c was written successfully.",
+      speaker: "assistant",
+      extractor: "llm",
+      trajId: "tX",
+      turn: 3,
+      outcome: "FAIL",
+    }
+    const turtle = serializeGraph([], [claim])
+    // the escaped surrogate pair is gone; U+FFFD stands in
+    expect(turtle).not.toMatch(/\\ud83c/i)
+    expect(turtle).toContain("\uFFFD")
+  })
+
+  test("keeps VALID surrogate pairs intact", () => {
+    const claim: Claim = {
+      id: "urn:claim:surr:2",
+      type: "fact",
+      subject: "x",
+      action: "did",
+      object: "y",
+      claimText: "Wrote the results file with a rocket \ud83d\ude80 emoji.",
+      speaker: "assistant",
+      extractor: "llm",
+      trajId: "tX",
+      turn: 4,
+      outcome: "PASS",
+    }
+    const turtle = serializeGraph([], [claim])
+    expect(turtle).toContain("\ud83d\ude80")
   })
 })
