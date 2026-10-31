@@ -111,6 +111,10 @@ class WazooMemoryOptions(InstalledAgentOptions):
 class WazooMemory(BaseInstalledAgent):
     """Runs the embedded Wazoo pipeline inside Harbor's container."""
 
+    options_model = WazooMemoryOptions  # memory-11: Harbor instantiates
+    # self.options from this; without the attribute, options resolves to None
+    # and every option access dies at run start.
+
     @staticmethod
     def name() -> str:
         return "wazoo-memory"
@@ -138,9 +142,17 @@ class WazooMemory(BaseInstalledAgent):
         await environment.upload_dir(repo_root / "src", f"{REMOTE}/src")
         install_cmd = (
             "set -eu; "
+            # Container tooling: curl for the bun installer, procps for pkill/
+            # ps (memory-10 lineage: some containers lack them and fail later
+            # mid-run), ca-certificates for HTTPS. apt may be absent on slim
+            # images; ignore that failure and rely on curl already present.
+            "(apt-get update -y && apt-get install -y curl ca-certificates procps) "
+            ">/dev/null 2>&1 || true; "
             "if ! command -v bun >/dev/null 2>&1; then "
             "curl -fsSL https://bun.sh/install | bash; fi; "
             f"export PATH=$HOME/.bun/bin:$PATH; "
+            # Symlink so the agent user (non-root) finds bun on a default PATH.
+            "ln -sf $HOME/.bun/bin/bun /usr/local/bin/bun 2>/dev/null || true; "
             f"cd {REMOTE} && bun install --frozen-lockfile"
         )
         result = await self.exec_as_root(environment, command=install_cmd, timeout_sec=600)
@@ -204,8 +216,13 @@ class WazooMemory(BaseInstalledAgent):
         if not key:
             raise ValueError("DEEPSEEK_API_KEY is required for wazoo-memory")
 
+        # bun may not be on the AGENT user's PATH (install ran as root; the
+        # agent shell is fresh). Use the known install location directly and
+        # export a sane PATH; Windows-side quoting issues disappear because the
+        # container is Linux and shlex handles the quoting.
         command = [
-            "export PATH=$HOME/.bun/bin:$PATH;",
+            "export PATH=$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin;",
+            "export BUN_INSTALL=$HOME/.bun;",
             "bun",
             "run",
             PIPELINE_ENTRY,
