@@ -49,7 +49,7 @@ from harbor.agents.installed.base import BaseInstalledAgent
 from harbor.agents.options import InstalledAgentOptions
 from harbor.models.agent.context import AgentContext
 
-from frontier_memory import memory_metadata
+from frontier_memory.agents import memory_metadata
 from frontier_memory.memory import check_memory
 
 REMOTE = "/opt/wazoo-deepseek-task"

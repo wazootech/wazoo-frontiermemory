@@ -66,6 +66,29 @@ class SourceContract(unittest.TestCase):
         self.assertIn("resume_claims_from", src)
         self.assertIn('resume_claims_from: str | None', src)
 
+    def test_options_model_is_declared(self):
+        # memory-11: without options_model, Harbor leaves self.options None
+        src = ADAPTER.read_text()
+        self.assertIn("options_model = WazooMemoryOptions", src)
+
+    def test_agent_path_exports_bun_location(self):
+        # run() executes as the agent user with a fresh shell; bun lives in
+        # /root/.bun on the install side, so the command exports an explicit
+        # PATH and the install symlinks bun to /usr/local/bin.
+        src = ADAPTER.read_text()
+        self.assertIn("/usr/local/bin:/usr/bin:/bin", src)
+        self.assertIn("ln -sf $HOME/.bun/bin/bun /usr/local/bin/bun", src)
+
+    def test_install_installs_container_deps(self):
+        src = ADAPTER.read_text()
+        self.assertIn("apt-get install -y curl ca-certificates procps", src)
+
+    def test_memory_metadata_import_path(self):
+        # deepseek_task imports from frontier_memory.agents (the defining
+        # module), not the package root, which does not re-export it.
+        task_src = (ADAPTER.parent / "deepseek_task.py").read_text()
+        self.assertIn("from frontier_memory.agents import memory_metadata", task_src)
+
     def test_pipeline_root_handles_both_layouts(self):
         src = ADAPTER.read_text()
         self.assertIn("wazoo-frontiermemory", src)  # sibling candidate
