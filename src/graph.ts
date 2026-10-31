@@ -193,8 +193,29 @@ export function serializeClaim(claim: Claim): string {
  */
 const LONE_HIGH = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g
 const LONE_LOW = /(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+
+/**
+ * Literal surrogate-range ESCAPE TEXT (backslash + u + hex) copied from tool
+ * logs into claim text — e.g. ruff's "\ud83c\udf70" output pasted verbatim.
+ * JSON.stringify emits the backslash, so the Turtle literal carries the escape,
+ * and the SPARQL parser's decodeUchar rejects surrogate-range escapes even
+ * though no actual surrogate character exists (wazoo-ab-memory-12: 13 such
+ * claims, per Ethan's scan of the rescued state). Valid surrogate PAIRS in
+ * escape text decode to the real astral character; lone highs/lows become
+ * U+FFFD escape-free text.
+ */
+const ESCAPED_SURROGATE_PAIR = /\\u(D[89abAB][0-9A-Fa-f]{2})\\u(D[cdefCDEF][0-9A-Fa-f]{2})/gi
+const ESCAPED_LONE_SURROGATE = /\\u(D[89abcdefAB][0-9A-Fa-f]{2})/gi
 export function sanitizeLoneSurrogates(text: string): string {
-  return text.replace(LONE_HIGH, "\uFFFD").replace(LONE_LOW, (_m, lead) => `${lead}\uFFFD`)
+  return text
+    .replace(ESCAPED_SURROGATE_PAIR, (_m, hi, lo) => {
+      const high = parseInt(hi, 16)
+      const low = parseInt(lo, 16)
+      return String.fromCodePoint((high - 0xd800) * 0x400 + (low - 0xdc00) + 0x10000)
+    })
+    .replace(ESCAPED_LONE_SURROGATE, "\uFFFD")
+    .replace(LONE_HIGH, "\uFFFD")
+    .replace(LONE_LOW, (_m, lead) => `${lead}\uFFFD`)
 }
 
 export function serializeGraph(trajs: Trajectory[], claims: Claim[]): string {
