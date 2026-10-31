@@ -17,6 +17,13 @@
  *                        for a family's top patterns, resolving details: the
  *                        most concrete supporting claim texts (exact params,
  *                        error strings, file paths).
+ *
+ * Pruning (src/pruning.ts) gates what renders: only evidence-thresholded
+ * high-certainty items carry MEMORY.md lines (each with a compact support
+ * badge), verified-failure singletons render as capped one-line cautions
+ * under their family's Known failures, and everything else stays in its
+ * skill file only. No item is deleted from the graph, and every decision is
+ * written to a machine-readable pruning report.
  */
 
 import { mkdir, writeFile } from "node:fs/promises"
@@ -33,12 +40,22 @@ import {
   type Family,
   type FamilyClaim,
 } from "./families"
+import {
+  DEFAULT_PRUNING_CONFIG,
+  type PruningConfig,
+  type PruningDecision,
+  type PruningReport,
+  pruneItems,
+  pruningReport,
+} from "./pruning"
 
 export interface ExportOptions {
   /** Include per-claim provenance lines in skill files (default true). */
   provenance?: boolean
   /** Max curated items per kind written to MEMORY.md's general section. */
   maxIndexItems?: number
+  /** Overrides for the evidence-thresholded pruning config (src/pruning.ts). */
+  pruning?: Partial<PruningConfig>
   /**
    * Claims for family classification (evidence-trajectory fingerprints) and
    * resolving details. Optional: without them, items classify by their own
@@ -72,6 +89,13 @@ const CAPS = {
 
 /** Families with fewer curated items than this fold into the general section. */
 const MIN_FAMILY_ITEMS = 3
+
+/**
+ * The pruning layer's per-family cap on fail-only caution lines (rules that
+ * failed every run they appeared in, below the index threshold). The
+ * majority-FAIL rules above the threshold keep the CAPS.familyFailures cap.
+ */
+const FAIL_CAUTIONS_PER_FAMILY = DEFAULT_PRUNING_CONFIG.failCautionsPerFamily
 
 /** A family needs this many curated rules before top items get resolving details. */
 const MIN_FAMILY_RULES_FOR_DETAILS = 5
@@ -172,6 +196,8 @@ interface FamilySection {
   family: Family
   rules: DreamItem[]
   knownFailures: DreamItem[]
+  /** Fail-only items (verdict fail-caution): one-line cautions, capped per family. */
+  failCautions: DreamItem[]
   preferences: DreamItem[]
   envFacts: DreamItem[]
 }
@@ -210,15 +236,32 @@ function byRank(a: DreamItem, b: DreamItem): number {
 
 interface Organized {
   sections: FamilySection[]
-  general: { rules: DreamItem[]; preferences: DreamItem[]; envFacts: DreamItem[] }
+  general: {
+    rules: DreamItem[]
+    preferences: DreamItem[]
+    envFacts: DreamItem[]
+    failCautions: DreamItem[]
+  }
 }
 
 /**
  * Group curated items into family sections plus a general remainder.
  * Families by curated item count (descending, then name); families below
  * MIN_FAMILY_ITEMS fold their items into the general section.
+ *
+ * With a pruning decision map (src/pruning.ts), only index-verdict items
+ * organize into MEMORY.md sections; fail-caution items attach to their
+ * family as one-line cautions under Known failures (ordered by concreteness
+ * of the pattern's claim text, capped at render time); skill-only items are
+ * left out of the index entirely — their skill files still export. Without
+ * pruning decisions the call keeps its pre-pruning behavior: every curated
+ * item organizes.
  */
-export function organizeByFamily(report: DreamReport, claims?: FamilyClaim[]): Organized {
+export function organizeByFamily(
+  report: DreamReport,
+  claims?: FamilyClaim[],
+  pruning?: Map<string, PruningDecision>
+): Organized {
   const allItems = curatedItems(report)
   const trajectoryFamilies = claims
     ? buildTrajectoryFamilies(claims)
@@ -234,19 +277,38 @@ export function organizeByFamily(report: DreamReport, claims?: FamilyClaim[]): O
     return classifyClaimText(`${item.instruction} ${item.text}`)
   }
 
+  const rendered = pruning
+    ? allItems.filter((item) => pruning.get(item.key)?.verdict === "index")
+    : allItems
+  const cautions = pruning
+    ? allItems.filter((item) => pruning.get(item.key)?.verdict === "fail-caution")
+    : []
+
   const byFamily = new Map<string, FamilySection>()
   for (const family of FAMILIES) {
-    byFamily.set(family.id, { family, rules: [], knownFailures: [], preferences: [], envFacts: [] })
+    byFamily.set(family.id, {
+      family,
+      rules: [],
+      knownFailures: [],
+      failCautions: [],
+      preferences: [],
+      envFacts: [],
+    })
   }
-  const general: Organized["general"] = { rules: [], preferences: [], envFacts: [] }
-  for (const item of allItems) {
+  const general: Organized["general"] = {
+    rules: [],
+    preferences: [],
+    envFacts: [],
+    failCautions: [],
+  }
+  const place = (item: DreamItem): void => {
     const familyId = familyOf(item, item.kind)
     const section = familyId ? byFamily.get(familyId) : undefined
     if (!section) {
       if (item.kind === "task-rule") general.rules.push(item)
       else if (item.kind === "user-preference") general.preferences.push(item)
       else general.envFacts.push(item)
-      continue
+      return
     }
     if (item.kind === "task-rule") {
       section.rules.push(item)
@@ -257,25 +319,48 @@ export function organizeByFamily(report: DreamReport, claims?: FamilyClaim[]): O
       section.envFacts.push(item)
     }
   }
+  for (const item of rendered) place(item)
+  // Fail-only items carry a family section's caution lines. Ordering puts
+  // repeated failures first: a caution backed by multiple failed runs is a
+  // pattern, a 1-of-1 is an anecdote — the latter renders only when slots
+  // remain, so single-run noise cannot crowd out real negative evidence.
+  const evidenceCountOf = (i: DreamItem): number => i.evidence.length
+  const cautionOrder = (a: DreamItem, b: DreamItem): number =>
+    evidenceCountOf(b) - evidenceCountOf(a) ||
+    concreteness(b.text) - concreteness(a.text) ||
+    (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+  for (const item of [...cautions].sort(cautionOrder)) {
+    const familyId = familyOf(item, item.kind)
+    const section = familyId ? byFamily.get(familyId) : undefined
+    if (!section) {
+      general.failCautions.push(item)
+      continue
+    }
+    section.failCautions.push(item)
+  }
 
   const itemsOf = (s: FamilySection): number =>
     s.rules.length + s.preferences.length + s.envFacts.length
   const sections = [...byFamily.values()]
     .filter((s) => itemsOf(s) >= MIN_FAMILY_ITEMS)
     .sort((a, b) => itemsOf(b) - itemsOf(a) || a.family.name.localeCompare(b.family.name))
-  // Fold below-threshold families back into the general section.
+  // Fold below-threshold families back into the general section, cautions
+  // included: a folded family's failures still render, under general.
   for (const section of byFamily.values()) {
     if (itemsOf(section) >= MIN_FAMILY_ITEMS) continue
     general.rules.push(...section.rules)
     general.preferences.push(...section.preferences)
     general.envFacts.push(...section.envFacts)
+    general.failCautions.push(...section.failCautions)
   }
   general.rules.sort(byRank)
   general.preferences.sort(byRank)
   general.envFacts.sort(byRank)
+  general.failCautions.sort(cautionOrder)
   for (const section of sections) {
     section.rules.sort(byRank)
     section.knownFailures.sort(byRank)
+    section.failCautions.sort(cautionOrder)
     section.preferences.sort(byRank)
     section.envFacts.sort(byRank)
   }
@@ -298,15 +383,33 @@ function curatedItems(report: DreamReport): DreamItem[] {
   return allItems
 }
 
+/** Compact, deterministic support badge: the distinct trajectories behind the line. */
+function supportBadge(item: DreamItem): string {
+  return `[${item.support} trajs]`
+}
+
 function renderRule(item: DreamItem, skillFiles: Map<DreamItem, string>, index: number): string {
   const file = skillFiles.get(item)
-  return `${index + 1}. ${item.instruction}${file ? ` — see \`${file}\`` : ""}`
+  return `${index + 1}. ${item.instruction} ${supportBadge(item)}${file ? ` — see \`${file}\`` : ""}`
 }
 
 function renderKnownFailures(items: DreamItem[]): string[] {
   return items.map((item) => {
     const { fail, total } = failCounts(item)
     return `- Verified FAIL: ${item.instruction} (${fail} of ${total} evidence trajectories failed)`
+  })
+}
+
+/** Fail-only cautions render in the same one-line style, capped per family.
+ *  1-of-1 anecdotes are demoted to a visually lighter form: a task agent must
+ *  be able to tell "failed 8 of 11 times" (a trap) from "one agent misread one
+ *  task once" (an anecdote) at a glance. */
+function renderFailCautions(items: DreamItem[], cap: number): string[] {
+  const rendered = items.slice(0, cap)
+  return rendered.map((item) => {
+    const { fail, total } = failCounts(item)
+    if (total >= 2) return renderKnownFailures([item])[0]
+    return `- Failed once: ${item.instruction} (1 attempt; anecdote, not a pattern)`
   })
 }
 
@@ -331,29 +434,35 @@ function renderMemoryIndex(
         .forEach((item, i) => lines.push(renderRule(item, skillFiles, i)))
       lines.push("")
     }
-    if (section.knownFailures.length > 0) {
+    if (section.knownFailures.length > 0 || section.failCautions.length > 0) {
       lines.push("### Known failures", "")
       lines.push(...renderKnownFailures(section.knownFailures.slice(0, CAPS.familyFailures)))
+      lines.push(...renderFailCautions(section.failCautions, FAIL_CAUTIONS_PER_FAMILY))
       lines.push("")
     }
     if (section.envFacts.length > 0) {
       lines.push("### Environment", "")
       section.envFacts.slice(0, CAPS.familyEnv).forEach((item) => {
-        lines.push(`- ${item.instruction}`)
+        lines.push(`- ${item.instruction} ${supportBadge(item)}`)
       })
       lines.push("")
     }
     if (section.preferences.length > 0) {
       lines.push("### User preferences", "")
       section.preferences.slice(0, CAPS.familyPrefs).forEach((item) => {
-        lines.push(`- ${item.instruction}`)
+        lines.push(`- ${item.instruction} ${supportBadge(item)}`)
       })
       lines.push("")
     }
   }
 
   const general = organized.general
-  if (general.rules.length > 0 || general.preferences.length > 0 || general.envFacts.length > 0) {
+  if (
+    general.rules.length > 0 ||
+    general.preferences.length > 0 ||
+    general.envFacts.length > 0 ||
+    general.failCautions.length > 0
+  ) {
     lines.push("## General working rules", "")
     if (general.rules.length > 0) {
       lines.push("### Rules", "")
@@ -363,24 +472,30 @@ function renderMemoryIndex(
       lines.push("")
     }
     // Families below the section threshold fold into the general section;
-    // their verified-FAIL patterns keep the same known-failures treatment.
+    // their verified-FAIL patterns keep the same known-failures treatment,
+    // and their fail-only cautions fold in with the same cap.
     const generalFailures = general.rules.filter(isMajorityFail)
+    const generalFailLines: string[] = []
     if (generalFailures.length > 0) {
+      generalFailLines.push(...renderKnownFailures(generalFailures.slice(0, CAPS.familyFailures)))
+    }
+    generalFailLines.push(...renderFailCautions(general.failCautions, FAIL_CAUTIONS_PER_FAMILY))
+    if (generalFailLines.length > 0) {
       lines.push("### Known failures", "")
-      lines.push(...renderKnownFailures(generalFailures.slice(0, CAPS.familyFailures)))
+      lines.push(...generalFailLines)
       lines.push("")
     }
     if (general.preferences.length > 0) {
       lines.push("### User preferences", "")
       general.preferences.slice(0, CAPS.generalPrefs).forEach((item) => {
-        lines.push(`- ${item.instruction}`)
+        lines.push(`- ${item.instruction} ${supportBadge(item)}`)
       })
       lines.push("")
     }
     if (general.envFacts.length > 0) {
       lines.push("### Environment", "")
       general.envFacts.slice(0, CAPS.generalEnv).forEach((item) => {
-        lines.push(`- ${item.instruction}`)
+        lines.push(`- ${item.instruction} ${supportBadge(item)}`)
       })
       lines.push("")
     }
@@ -403,18 +518,40 @@ export async function exportMemory(
   report: DreamReport,
   outDir: string,
   options: ExportOptions = {}
-): Promise<{ report: ValidationReport; files: string[] }> {
+): Promise<{ report: ValidationReport; files: string[]; pruning: PruningReport }> {
   const opts = {
     provenance: true,
     maxIndexItems: 12,
     claims: undefined as FamilyClaim[] | undefined,
+    pruning: undefined as Partial<PruningConfig> | undefined,
     ...options,
   }
+  const pruningConfig: PruningConfig = { ...DEFAULT_PRUNING_CONFIG, ...opts.pruning }
   await mkdir(join(outDir, "skills"), { recursive: true })
 
-  const organized = organizeByFamily(report, opts.claims)
-
   const allItems = curatedItems(report)
+  const trajectoryFamilies = opts.claims
+    ? buildTrajectoryFamilies(opts.claims)
+    : new Map<string, string | undefined>()
+  const familyOf = (item: DreamItem): string | undefined => {
+    if (trajectoryFamilies.size > 0) {
+      return item.kind === "user-preference"
+        ? familyForPreference(item, trajectoryFamilies)
+        : familyForItem(item, trajectoryFamilies)
+    }
+    return classifyClaimText(`${item.instruction} ${item.text}`)
+  }
+  // Distinct trajectories per family: the always-keep rescue for a family's
+  // sole rule is measured against how much real work ran in that family.
+  const familyTrajectoryCounts = new Map<string, number>()
+  for (const family of trajectoryFamilies.values()) {
+    if (!family) continue
+    familyTrajectoryCounts.set(family, (familyTrajectoryCounts.get(family) ?? 0) + 1)
+  }
+  const decisions = pruneItems(allItems, { familyOf, familyTrajectoryCounts }, pruningConfig)
+  const pruning = pruningReport(decisions, pruningConfig)
+
+  const organized = organizeByFamily(report, opts.claims, decisions)
   const skillFiles = new Map<DreamItem, string>()
   const written: string[] = []
   // Every curated item gets a skill file so every index line can carry a
@@ -463,5 +600,5 @@ export async function exportMemory(
   if (!validation.ok) {
     throw new Error(`exported memory failed self-validation: ${validation.errors.join("; ")}`)
   }
-  return { report: validation, files: [ENTRY_FILE, SUMMARY_FILE, ...written] }
+  return { report: validation, files: [ENTRY_FILE, SUMMARY_FILE, ...written], pruning }
 }
