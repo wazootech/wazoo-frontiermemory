@@ -60,6 +60,34 @@ PIPELINE_FILES = (
 )
 
 
+def _pipeline_root() -> Path:
+    """Locate the wazoo-frontiermemory checkout that holds src/index.ts.
+
+    Two layouts are supported (both observed in real runs):
+    - in-repo: this file lives in wazoo-frontiermemory/adapter/ -> parent.parent
+    - A/B layout: this file was copied to
+      frontiermemory/src/frontier_memory/agents/wazoo_memory.py -> the sibling
+      wazoo-frontiermemory clone two directories up from the repo root.
+    Checked in that order; the first candidate whose src/index.ts exists wins.
+    """
+    here = Path(__file__).resolve()
+    candidates = [
+        # in-repo: adapter/wazoo_memory.py -> adapter/ -> repo root
+        here.parent.parent,
+        # A/B layout: frontiermemory/src/frontier_memory/agents/wazoo_memory.py
+        #   agents/ -> frontier_memory/ -> src/ -> frontiermemory/ -> SIBLING
+        #   wazoo-frontiermemory (two clones side by side under the same parent)
+        here.parent.parent.parent.parent.parent / "wazoo-frontiermemory",
+    ]
+    for candidate in candidates:
+        if (candidate / "src" / "index.ts").is_file():
+            return candidate
+    raise FileNotFoundError(
+        "wazoo-frontiermemory pipeline not found next to the adapter; expected "
+        "either adapter/ inside its own repo or a sibling wazoo-frontiermemory clone"
+    )
+
+
 class WazooMemoryOptions(InstalledAgentOptions):
     """Tunables for the memory-generation run."""
 
@@ -70,6 +98,10 @@ class WazooMemoryOptions(InstalledAgentOptions):
     # real extraction path with the deterministic fallback underneath.
     fallback_only: bool = False
     limit: int | None = Field(default=None, gt=0)
+    # Skip extraction; load claims.json from the state dir (written by a prior
+    # ingest, e.g. a run that died after the extraction spend). The pipeline's
+    # --resume-from-claims makes a post-ingest crash a no-cost retry.
+    resume_from_claims: bool = False
 
 
 class WazooMemory(BaseInstalledAgent):
@@ -84,7 +116,7 @@ class WazooMemory(BaseInstalledAgent):
 
     async def install(self, environment) -> None:
         """Setup phase: internet available. Stage source, install Bun, fetch model."""
-        repo_root = Path(__file__).resolve().parent.parent
+        repo_root = _pipeline_root()
         await self.exec_as_root(environment, command=f"mkdir -p {REMOTE}")
         for rel in PIPELINE_FILES:
             await environment.upload_file(repo_root / rel, f"{REMOTE}/{rel}")
@@ -142,7 +174,10 @@ class WazooMemory(BaseInstalledAgent):
             + f" && head -c 40 {TFJS_MODEL_DIR}/model.json | grep -q modelTopology"
         )
         verify = await self.exec_as_root(environment, command=verify_cmd, timeout_sec=60)
-        if verify.exit_code != 0:
+        # Harbor's ExecResult exposes return_code (exit_code is the attr that
+        # burns a run: observed on Modal 2026-10-31, memory-7 class).
+        return_code = getattr(verify, "return_code", getattr(verify, "exit_code", 1))
+        if return_code != 0:
             raise RuntimeError(
                 "TFJS USE model download incomplete or invalid (a stub/error page "
                 "slipped through); see setup/tfjs-model.log"
@@ -175,6 +210,8 @@ class WazooMemory(BaseInstalledAgent):
             command.append("--fallback-only")
         if self.options.limit is not None:  # type: ignore[attr-defined]
             command += ["--limit", str(self.options.limit)]
+        if self.options.resume_from_claims:  # type: ignore[attr-defined]
+            command.append("--resume-from-claims")
 
         failed = False
         try:
@@ -198,6 +235,28 @@ class WazooMemory(BaseInstalledAgent):
                     self.logs_dir / "memory-validation.json",
                 )
             except Exception:
-                if not failed:
-                    raise
                 self.logger.warning("Could not collect memory validation report", exc_info=True)
+            # Rescue the extraction state regardless of outcome: claims.json is
+            # the run's biggest cost (24k LLM extractions on the full corpus);
+            # losing it to a later-stage crash wastes the entire spend (the
+            # memory-10 lesson). On failure this is the retry input for
+            # --resume-from-claims; on success it is the auditable record.
+            for state_file in ("claims.json", "trajectories.json", "dream.json"):
+                try:
+                    await environment.download_file(
+                        f"{REMOTE}/state/{state_file}",
+                        self.logs_dir / "state" / state_file,
+                    )
+                except Exception:
+                    self.logger.warning("Could not collect %s from state", state_file, exc_info=True)
+            if failed:
+                raise RuntimeError(
+                    "wazoo-memory pipeline failed; extraction state rescued to "
+                    "logs/state/ for --resume-from-claims"
+                )
+
+
+# Documented submission name: `frontier_memory.agents.wazoo_memory:WazooMemoryAgent`.
+# The class is WazooMemory; the alias keeps the module path stable for the CLI
+# regardless of which name callers use (both appear in our runbooks).
+WazooMemoryAgent = WazooMemory
