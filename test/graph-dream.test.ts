@@ -201,6 +201,41 @@ describe("deep surrogate sanitization (wazoo-ab-memory-12 regression)", () => {
       lineCount: 2,
     }
     const turtle = serializeGraph([traj], [])
+describe("literal escape-text sanitization (memory-12's actual species)", () => {
+  test("neutralizes lone surrogate ESCAPE TEXT copied from tool logs", async () => {
+    const claim: Claim = {
+      id: "urn:claim:esc:1",
+      type: "fact",
+      subject: "x",
+      action: "ran",
+      object: "ruff",
+      claimText: "\\ud83c\\udff4 output: 1 file reformatted",
+      speaker: "assistant",
+      extractor: "llm",
+      trajId: "tE1",
+      turn: 2,
+      outcome: "FAIL",
+    }
+    const turtle = serializeGraph([], [claim])
+    // the escape must be gone from the serialized literal entirely
+    expect(turtle).not.toMatch(/\\u(d|D)[89abAB]/)
+  })
+
+  test("decodes VALID surrogate-pair escape text to the real character", async () => {
+    const claim: Claim = {
+      id: "urn:claim:esc:2",
+      type: "fact",
+      subject: "x",
+      action: "ran",
+      object: "tool",
+      claimText: "status \\ud83d\\ude80 deployed",
+      speaker: "assistant",
+      extractor: "llm",
+      trajId: "tE2",
+      turn: 3,
+      outcome: "PASS",
+    }
+    const turtle = serializeGraph([], [claim])
     expect(turtle).toContain("\ud83d\ude80")
   })
 })
