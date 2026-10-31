@@ -416,3 +416,22 @@ describe("MEMORY.md line band", () => {
     }
   })
 })
+
+describe("--resume-from-claims (memory-10 spend preservation)", () => {
+  test("reuses existing claims.json without extraction calls", async () => {
+    const { parseArgs } = await import("../src/index")
+    const args = parseArgs([
+      "all",
+      "--corpus",
+      "x",
+      "--state",
+      "/tmp/does-not-exist-yet",
+      "--out",
+      "/tmp/x",
+      "--resume-from-claims",
+    ])
+    expect(args.resumeFromClaims).toBeTrue()
+    const notResumed = parseArgs(["all", "--corpus", "x", "--state", "/tmp/y", "--out", "/tmp/z"])
+    expect(notResumed.resumeFromClaims).toBeFalse()
+  })
+})

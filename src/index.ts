@@ -17,6 +17,9 @@
  *   --limit <n>         ingest at most n trajectories (screening runs)
  *   --concurrency <n>   parallel trajectory extraction (default 1)
  *   --fallback-only     deterministic keyword extractor, no network
+ *   --resume-from-claims  skip extraction; reuse claims.json in --state from a
+ *                         prior ingest (e.g. a run that died later in the
+ *                         pipeline). Preserves the extraction spend.
  *   --model-dir <dir>   local TFJS USE model dir for real vector search
  *                       (absent => deterministic hashing embeddings)
  *
@@ -52,6 +55,8 @@ export interface CliArgs {
   concurrency: number
   fallbackOnly: boolean
   modelDir?: string
+  /** Skip extraction; load claims.json from --state (written by a prior ingest). */
+  resumeFromClaims: boolean
 }
 
 const USAGE = `usage: bun run src/index.ts <ingest|dream|export|all> --corpus <dir> --out <dir>`
@@ -82,6 +87,7 @@ export function parseArgs(argv: string[]): CliArgs {
         limit: { type: "string" },
         concurrency: { type: "string", default: "1" },
         "fallback-only": { type: "boolean", default: false },
+        "resume-from-claims": { type: "boolean", default: false },
         "model-dir": { type: "string" },
       },
     })
@@ -91,7 +97,14 @@ export function parseArgs(argv: string[]): CliArgs {
     process.argv = saved
   }
   const values = parsed.values as Record<
-    "corpus" | "out" | "state" | "limit" | "concurrency" | "model-dir" | "fallback-only",
+    | "corpus"
+    | "out"
+    | "state"
+    | "limit"
+    | "concurrency"
+    | "model-dir"
+    | "fallback-only"
+    | "resume-from-claims",
     string | boolean | undefined
   >
   const [phase] = parsed.positionals
@@ -106,11 +119,24 @@ export function parseArgs(argv: string[]): CliArgs {
     limit: values.limit === undefined ? undefined : Number(values.limit),
     concurrency: Number(values.concurrency),
     fallbackOnly: Boolean(values["fallback-only"]),
+    resumeFromClaims: Boolean(values["resume-from-claims"]),
     modelDir: values["model-dir"] === undefined ? undefined : String(values["model-dir"]),
   }
 }
 
 async function runIngest(args: CliArgs): Promise<IngestState> {
+  // --resume-from-claims: a prior ingest may have completed and written
+  // claims.json even though the overall pipeline died later (observed:
+  // wazoo-ab-memory-10 died after full extraction on a serialization bug).
+  // Reusing the claims preserves the entire extraction spend; the corpus is
+  // still parsed for trajectory structure, but no extraction call happens.
+  if (args.resumeFromClaims) {
+    const existing = await readIngestState(args.state)
+    console.log(
+      `ingest: RESUMED ${existing.claims.length} claims from ${args.state}/claims.json (--resume-from-claims; no extraction calls made)`
+    )
+    return existing
+  }
   const trajectories = await loadCorpus(args.corpus, args.limit)
   console.log(`ingest: ${trajectories.length} trajectories from ${args.corpus}`)
   const claims: Awaited<ReturnType<typeof extractClaimsForTrajectory>>[] = []
