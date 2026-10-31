@@ -127,17 +127,25 @@ class WazooMemory(BaseInstalledAgent):
         # Fail the install if any weight is missing: a partial model loads
         # during run(), wastes part of the 6-hour window, and produces a
         # degraded embedding quality that is hard to notice from the outside.
+        # Existence AND size: tfhub can answer 200 with an HTML error page, which
+        # passes a test -f check and then fails inside tfjs at import time with
+        # the generic "failed to vectorize literal chunk blocks" error (observed
+        # on a real Modal run 2026-10-31). model.json is ~247KB, vocab.json
+        # ~218KB, shards ~4MB (last ~2.7MB); anything far below is a stub.
         verify_cmd = (
-            f"test -f {TFJS_MODEL_DIR}/model.json && "
-            f"test -f {TFJS_MODEL_DIR}/vocab.json && "
+            f"test $(stat -c%s {TFJS_MODEL_DIR}/model.json) -gt 200000 && "
+            f"test $(stat -c%s {TFJS_MODEL_DIR}/vocab.json) -gt 200000 && "
             + " && ".join(
-                f"test -f {TFJS_MODEL_DIR}/group1-shard{i + 1}of7" for i in range(7)
+                f"test $(stat -c%s {TFJS_MODEL_DIR}/group1-shard{i + 1}of7) -gt 2000000"
+                for i in range(7)
             )
+            + f" && head -c 40 {TFJS_MODEL_DIR}/model.json | grep -q modelTopology"
         )
         verify = await self.exec_as_root(environment, command=verify_cmd, timeout_sec=60)
         if verify.exit_code != 0:
             raise RuntimeError(
-                "TFJS USE model download incomplete; see setup/tfjs-model.log"
+                "TFJS USE model download incomplete or invalid (a stub/error page "
+                "slipped through); see setup/tfjs-model.log"
             )
 
     async def run(self, instruction: str, environment, context: Any) -> None:
