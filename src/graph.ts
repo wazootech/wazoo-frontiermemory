@@ -71,10 +71,28 @@ function hashToken(token: string): number {
  */
 export async function loadTfjsUseEmbeddingService(modelDir: string): Promise<EmbeddingService> {
   const mod = await import("@worlds/sdk/tfjs-use")
-  return new mod.UniversalSentenceEncoderEmbeddingService({
+  const service = new mod.UniversalSentenceEncoderEmbeddingService({
     modelUrl: join(modelDir, "model.json"),
     vocabUrl: join(modelDir, "vocab.json"),
   }) as unknown as EmbeddingService
+  // Fail HERE with a named file, not deep inside import with the SDK's generic
+  // "failed to vectorize literal chunk blocks" (observed on a real Modal run:
+  // tfhub had served an HTML error page as model.json, and the true cause was
+  // unreadable under three wrapping layers). One real embed on load: if the
+  // model is corrupt this throws in seconds, naming the file.
+  try {
+    await service.embed(["pipeline model smoke test"])
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message.slice(0, 300) : String(cause)
+    throw new Error(
+      `TFJS USE model at ${modelDir} failed a load-time embed; the corpus run is ` +
+        `aborted BEFORE extraction so no budget is burned. Most likely a stub or ` +
+        `error page among model.json / vocab.json / the 7 shards (the adapter's ` +
+        `install verifies sizes, but re-download to be sure). Underlying error: ${detail}`,
+      { cause }
+    )
+  }
+  return service
 }
 
 export async function createGraphClient(opts: {
