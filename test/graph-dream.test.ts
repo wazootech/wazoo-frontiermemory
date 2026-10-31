@@ -201,6 +201,11 @@ describe("deep surrogate sanitization (wazoo-ab-memory-12 regression)", () => {
       lineCount: 2,
     }
     const turtle = serializeGraph([traj], [])
+    // the valid pair must survive sanitization untouched
+    expect(turtle).toContain("\ud83d\ude80")
+  })
+})
+
 describe("literal escape-text sanitization (memory-12's actual species)", () => {
   test("neutralizes lone surrogate ESCAPE TEXT copied from tool logs", async () => {
     const claim: Claim = {
