@@ -178,9 +178,17 @@ async function runExport(args: CliArgs): Promise<void> {
   } catch {
     claims = undefined
   }
-  const { report: validation, files } = await exportMemory(report, args.out, { claims })
+  const { report: validation, files, pruning } = await exportMemory(report, args.out, { claims })
   console.log(`export: ${files.length} files, ${validation.total_bytes} bytes -> ${args.out}`)
   console.log(`export: self-validation ok (memory_sha256 ${validation.memory_sha256})`)
+  console.log(
+    `export: pruning -> ${pruning.summary.index} index, ${pruning.summary.failCaution} fail-caution, ${pruning.summary.skillOnly} skill-only`
+  )
+  // The machine-readable pruning report lands beside the dream state and is
+  // committed under docs/runs/<run>/ as the evidence for what rendered.
+  const pruningPath = join(args.state, "pruning-report.json")
+  await writeFile(pruningPath, JSON.stringify(pruning, null, 2) + "\n")
+  console.log(`export: pruning report -> ${pruningPath}`)
   // Persist the self-validation report for the run record and, on the
   // benchmark, for the submission bundle (Harbor downloads it from the
   // adapter's logs dir after run()).

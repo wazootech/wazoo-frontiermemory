@@ -165,8 +165,8 @@ interface Fixture {
 
 /**
  * A small synthetic corpus: five DAPT pcap rules (enough to trigger resolving
- * details), one majority-FAIL rule among them, one repo-work preference, and
- * two family-less rules.
+ * details), one fail-only rule among them (renders as a caution under Known
+ * failures), one repo-work preference, and two family-less rules.
  */
 function fixture(): Fixture {
   const claims = claimsOf([
@@ -202,8 +202,13 @@ function fixture(): Fixture {
         key: "network stats template",
         instruction: "Leave the # comment lines in /root/network_stats.csv unchanged",
         text: "The stats template is /root/network_stats.csv",
-        support: 1,
-        evidence: rdpcapEvidence([["FAIL", "t2", 2]]),
+        // Contested-with-resolution: the first run hit the FAIL, the fixed
+        // form passed on the retry — the pruning layer keeps that species.
+        support: 2,
+        evidence: rdpcapEvidence([
+          ["FAIL", "t2", 2],
+          ["PASS", "t1", 5],
+        ]),
       }),
       item({
         key: "bidirectional once",
@@ -229,6 +234,17 @@ function fixture(): Fixture {
         text: "Use Scapy rdpcap to read the pcap file",
         support: 1,
         evidence: rdpcapEvidence([["PASS", "t1", 5]]),
+      }),
+      item({
+        key: "pcap comment lines",
+        instruction: "Skip the # comment lines when reading /root/network_stats.csv",
+        text: "Comment lines starting with # are not data rows",
+        // Verified-works species: passed in both trajectories it ran in.
+        support: 2,
+        evidence: rdpcapEvidence([
+          ["PASS", "t1", 4],
+          ["PASS", "t2", 3],
+        ]),
       }),
       item({
         key: "poll empty",
